@@ -61,7 +61,20 @@ export function canGoBack() {
   return idx > 0;
 }
 
+// A full-screen overlay (like the photo viewer) can register itself here,
+// so the phone's Back button closes it instead of leaving the screen.
+let overlayClose = null;
+export function setOverlay(close) {
+  overlayClose = close;
+}
+
 async function mayLeave() {
+  if (overlayClose) {
+    const close = overlayClose;
+    overlayClose = null;
+    close();
+    return false;
+  }
   if (current && current.screen && current.screen.canLeave) {
     return current.screen.canLeave();
   }

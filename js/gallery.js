@@ -1,10 +1,11 @@
 // The photos of an entry, one under another, for the detail screens.
-// Each photo has a Download button; "Download all photos" when there are several.
+// Each photo has Full screen (zoom) and Download; "Download all photos" when there are several.
 // Downloads are full size, with the drawing (if any) merged on top.
 
 import { flattenPhoto } from './image.js';
 import { photoFileName, shareOrDownload } from './exporter.js';
 import { toast } from './ui.js';
+import { openViewer } from './viewer.js';
 
 // count: number of photos. Returns HTML with empty frames (filled in by mountGallery).
 export function galleryHtml(count) {
@@ -18,7 +19,10 @@ export function galleryHtml(count) {
       </div>
       <figcaption class="gallery-caption">
         <span>${count > 1 ? `Photo ${i + 1} of ${count}` : 'Photo'}</span>
-        <button type="button" class="btn btn-secondary btn-small" data-download="${i}">Download</button>
+        <span class="gallery-buttons">
+          <button type="button" class="btn btn-secondary btn-small" data-fullscreen="${i}">Full screen</button>
+          <button type="button" class="btn btn-secondary btn-small" data-download="${i}">Download</button>
+        </span>
       </figcaption>
     </figure>`).join('');
   return `
@@ -36,7 +40,8 @@ export function mountGallery(el, { count, loadPhotos, base, urls, thumb }) {
   el.querySelectorAll('[data-busy]').forEach((b) => { b.hidden = false; });
 
   // Load the photos, then get the download files ready (so a tap shares at once).
-  const ready = loadPhotos().then(async (photos) => {
+  const loaded = loadPhotos();
+  const ready = loaded.then(async (photos) => {
     photos.forEach((p, i) => {
       el.querySelector(`[data-photo="${i}"]`).src = urls.make(p.photo);
       const d = el.querySelector(`[data-drawing="${i}"]`);
@@ -65,6 +70,14 @@ export function mountGallery(el, { count, loadPhotos, base, urls, thumb }) {
       button.disabled = false;
     }
   }
+
+  // Full screen with zoom: the button, or tapping the photo.
+  async function fullScreen(i) {
+    const photos = await loaded.catch(() => null);
+    if (photos) openViewer(photos, i);
+  }
+  el.querySelectorAll('[data-fullscreen]').forEach((btn) => btn.addEventListener('click', () => fullScreen(Number(btn.dataset.fullscreen))));
+  el.querySelectorAll('.gallery-item .photo-frame').forEach((frame, i) => frame.addEventListener('click', () => fullScreen(i)));
 
   el.querySelectorAll('[data-download]').forEach((btn) => btn.addEventListener('click', async () => {
     const files = await ready.catch(() => null);

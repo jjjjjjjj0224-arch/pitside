@@ -253,20 +253,13 @@ h1:focus { outline: none; }
 /* ---------- Several photos ---------- */
 
 .photo-section { display: flex; flex-direction: column; gap: 10px; }
-.photo-filled { touch-action: pan-y; }          /* left/right swipes switch photos */
-.photo-count {
-  position: absolute; top: 10px; left: 10px;
-  background: rgba(17, 24, 39, 0.85); color: #fff;
-  padding: 4px 10px; border-radius: 999px; font-size: 15px; font-weight: 700;
-}
-.photo-nav {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  min-height: 48px; padding: 8px 12px;
-}
-.photo-prev { left: 8px; }
-.photo-next { right: 8px; }
-.photo-nav:disabled { opacity: 0.35; }
+.photo-filled { touch-action: pan-y; cursor: zoom-in; }   /* left/right swipes switch photos, tap = full screen */
 .photo-actions .btn { min-width: 0; flex: 1; max-width: 120px; padding: 10px 8px; }
+
+/* ‹ Prev | Full screen | Next ›  under the photo (nothing covers the photo) */
+.photo-nav-row { display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 8px; }
+.photo-nav-row .btn { padding: 10px 6px; }
+.photo-count { text-align: center; color: var(--muted); font-weight: 600; margin-top: -4px; }
 
 .photo-strip { display: flex; flex-direction: column; gap: 10px; }
 .strip-list { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; scrollbar-width: thin; }
@@ -287,7 +280,37 @@ h1:focus { outline: none; }
 /* Detail screens: photos one under another, each with Download */
 .gallery { display: flex; flex-direction: column; gap: 14px; }
 .gallery-item { margin: 0; display: flex; flex-direction: column; gap: 6px; }
-.gallery-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; color: var(--muted); }
+.gallery-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; color: var(--muted); flex-wrap: wrap; }
+.gallery-buttons { display: flex; gap: 8px; }
+.gallery-item .photo-frame { cursor: zoom-in; }
+
+/* Full-screen photo viewer */
+.viewer {
+  position: fixed; inset: 0; z-index: 55;
+  background: #000; color: #fff;
+  display: flex; flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  overscroll-behavior: none;
+}
+.viewer-top, .viewer-bottom {
+  display: flex; align-items: center; gap: 8px; padding: 8px;
+  background: #111827;
+}
+.viewer-top { justify-content: flex-end; }
+.viewer-count { margin-right: auto; font-weight: 700; padding-left: 6px; }
+.viewer-bottom { justify-content: center; flex-wrap: wrap; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+.viewer-btn { background: #1F2937; color: #fff; border-color: #4B5563; min-height: 46px; padding: 6px 12px; font-size: 16px; }
+.viewer-btn:disabled { opacity: 0.35; }
+.viewer-stage {
+  flex: 1; min-height: 0; position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  touch-action: none; cursor: grab;
+}
+.viewer-box { position: relative; flex: none; will-change: transform; }
+.viewer-box img {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; pointer-events: none;
+}
 
 /* Keyboard open on a phone: make the photo short so the caption stays visible. */
 .kb-open .photo-frame { aspect-ratio: auto; width: 100%; height: 26vh; min-height: 120px; }
@@ -348,8 +371,16 @@ h1:focus { outline: none; }
   padding-top: env(safe-area-inset-top);
   overscroll-behavior: none;
 }
-.draw-stage { flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center; }
-.draw-box { position: relative; }
+.draw-stage {
+  flex: 1; min-height: 0; position: relative; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; touch-action: none;           /* our own zoom + drawing, no page zoom/scroll */
+}
+.draw-box { position: relative; flex: none; will-change: transform; }
+.draw-hint {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  margin: 0; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+  background: rgba(17, 24, 39, 0.8); color: #E5E7EB; font-size: 14px; pointer-events: none;
+}
 .draw-photo, .draw-canvas {
   position: absolute; inset: 0; width: 100%; height: 100%; display: block;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;

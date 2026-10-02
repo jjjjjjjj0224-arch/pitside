@@ -7,6 +7,7 @@ import { getSettings, saveSettings } from '../settings.js';
 import { go, goBack, getPreviousHash, canGoBack } from '../router.js';
 import { resizePhoto, makeThumbnail, photosOf, MAX_PHOTOS } from '../image.js';
 import { openDrawMode } from '../draw.js';
+import { openViewer } from '../viewer.js';
 import { createVoiceNote } from '../recorder.js';
 import { getTeam } from '../team.js';
 import { syncSoon } from '../sync.js';
@@ -74,9 +75,6 @@ export async function renderCapture(el, id) {
           <div class="photo-filled" hidden>
             <img class="layer layer-photo" alt="Entry photo">
             <img class="layer layer-drawing" alt="" hidden>
-            <span class="photo-count" hidden></span>
-            <button type="button" class="btn btn-overlay photo-nav photo-prev" data-act="prev" hidden>‹ Prev</button>
-            <button type="button" class="btn btn-overlay photo-nav photo-next" data-act="next" hidden>Next ›</button>
             <div class="photo-actions">
               <button type="button" class="btn btn-overlay" data-act="draw">Draw</button>
               <button type="button" class="btn btn-overlay" data-act="retake">Retake</button>
@@ -87,6 +85,12 @@ export async function renderCapture(el, id) {
           <input type="file" accept="image/*" capture="environment" data-input="camera" hidden>
           <input type="file" accept="image/*" multiple data-input="gallery" hidden>
         </div>
+        <div class="photo-nav-row" hidden>
+          <button type="button" class="btn btn-secondary" data-act="prev">‹ Prev</button>
+          <button type="button" class="btn btn-secondary" data-act="fullscreen">Full screen</button>
+          <button type="button" class="btn btn-secondary" data-act="next">Next ›</button>
+        </div>
+        <p class="photo-count" aria-live="polite" hidden></p>
         <div class="photo-strip" hidden>
           <div class="strip-list" role="group" aria-label="Photos in this entry"></div>
           <div class="strip-add">
@@ -185,7 +189,8 @@ export async function renderCapture(el, id) {
     emptyBox.hidden = has;
     filledBox.hidden = !has;
     strip.hidden = !has;
-    if (!has) return;
+    $('.photo-nav-row').hidden = !has;
+    if (!has) { countLabel.hidden = true; return; }
 
     const p = list[current];
     photoImg.src = urls.make(p.photo);
@@ -194,10 +199,10 @@ export async function renderCapture(el, id) {
     if (p.drawing) drawingImg.src = urls.make(p.drawing);
     countLabel.hidden = list.length < 2;
     countLabel.textContent = `Photo ${current + 1} of ${list.length}`;
-    // Prev / Next arrows (only when there's more than one photo).
+    // Prev / Next under the photo (only when there's more than one photo).
     const prevBtn = $('[data-act="prev"]');
     const nextBtn = $('[data-act="next"]');
-    prevBtn.hidden = nextBtn.hidden = list.length < 2;
+    prevBtn.style.visibility = nextBtn.style.visibility = list.length < 2 ? 'hidden' : '';
     prevBtn.disabled = current === 0;
     nextBtn.disabled = current === list.length - 1;
 
@@ -291,8 +296,19 @@ export async function renderCapture(el, id) {
     const dy = e.clientY - swipeStart.y;
     swipeStart = null;
     if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) showPhotoAt(current + (dx < 0 ? 1 : -1));
+    else if (Math.abs(dx) < 10 && Math.abs(dy) < 10) openFullScreen();   // a tap opens full screen
   });
   filledBox.addEventListener('pointercancel', () => { swipeStart = null; });
+
+  // Full screen with zoom. "Draw" there opens draw mode on that photo.
+  function openFullScreen() {
+    if (!draft.photos.length) return;
+    openViewer(draft.photos, current, {
+      onClose: (i) => showPhotoAt(i),
+      onDraw: (i) => { showPhotoAt(i); startDrawing(); },
+    });
+  }
+  $('[data-act="fullscreen"]').addEventListener('click', openFullScreen);
 
   $('[data-act="retake"]').addEventListener('click', async () => {
     if (draft.photos[current] && draft.photos[current].drawing) {
@@ -321,9 +337,9 @@ export async function renderCapture(el, id) {
     showPhotos();
   });
 
-  $('[data-act="draw"]').addEventListener('click', async () => {
+  async function startDrawing() {
     const p = draft.photos[current];
-    if (!p) return;
+    if (!p || drawSession) return;
     drawSession = openDrawMode(p.photo, p.drawing);
     const result = await drawSession.done;
     drawSession = null;
@@ -333,7 +349,8 @@ export async function renderCapture(el, id) {
       showPhotos();
     }
     $('[data-act="draw"]').focus();
-  });
+  }
+  $('[data-act="draw"]').addEventListener('click', startDrawing);
 
   // ---- Entry type ----
 

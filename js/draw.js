@@ -40,6 +40,7 @@ export function openDrawMode(photoBlob, drawingBlob) {
         <canvas class="draw-canvas" aria-label="Drawing area. Use touch or mouse to draw."></canvas>
       </div>
       <p class="draw-loading">Loading photo…</p>
+      <p class="draw-hint" aria-hidden="true">One finger draws · two fingers zoom and move</p>
     </div>
     <div class="draw-toolbar">
       <div class="draw-row" role="group" aria-label="Pen color">
@@ -53,6 +54,11 @@ export function openDrawMode(photoBlob, drawingBlob) {
         <span class="draw-row-label">Line</span>
         ${WIDTHS.map((w, i) => `
           <button type="button" class="btn draw-tool" data-width="${w.value}" aria-pressed="${i === 0}">${w.name}</button>`).join('')}
+      </div>
+      <div class="draw-row" role="group" aria-label="Zoom">
+        <span class="draw-row-label">Zoom</span>
+        <button type="button" class="btn draw-tool" data-act="zoom-out" aria-label="Zoom out">− Out</button>
+        <button type="button" class="btn draw-tool" data-act="zoom-in" aria-label="Zoom in">+ In</button>
       </div>
       <div class="draw-row draw-actions">
         <button type="button" class="btn draw-tool" data-act="undo">Undo</button>
@@ -103,16 +109,58 @@ export function openDrawMode(photoBlob, drawingBlob) {
     if (!ready) return;
     const availW = stage.clientWidth;
     const availH = stage.clientHeight;
-    const scale = Math.min(availW / canvas.width, availH / canvas.height);
-    box.style.width = `${Math.floor(canvas.width * scale)}px`;
-    box.style.height = `${Math.floor(canvas.height * scale)}px`;
+    const fit = Math.min(availW / canvas.width, availH / canvas.height);
+    box.style.width = `${Math.floor(canvas.width * fit)}px`;
+    box.style.height = `${Math.floor(canvas.height * fit)}px`;
+    applyView();
   }
   window.addEventListener('resize', layout);
 
+  // ---- Zoom (scale) and move (tx, ty) ----
+  // The photo and canvas zoom together, so the drawing always lines up.
+  // Drawing still works while zoomed: toCanvasPoint() uses the zoomed position.
+
+  const MAX_ZOOM = 6;
+  let zoom = 1;
+  let tx = 0;
+  let ty = 0;
+  const zoomInBtn = overlay.querySelector('[data-act="zoom-in"]');
+  const zoomOutBtn = overlay.querySelector('[data-act="zoom-out"]');
+
+  function applyView() {
+    // Don't let the photo be moved off screen.
+    const maxX = Math.max(0, (box.offsetWidth * zoom - stage.clientWidth) / 2);
+    const maxY = Math.max(0, (box.offsetHeight * zoom - stage.clientHeight) / 2);
+    tx = Math.min(maxX, Math.max(-maxX, tx));
+    ty = Math.min(maxY, Math.max(-maxY, ty));
+    box.style.transform = `translate(${tx}px, ${ty}px) scale(${zoom})`;
+    zoomOutBtn.disabled = zoom <= 1;
+    zoomInBtn.disabled = zoom >= MAX_ZOOM;
+  }
+
+  // A point on screen, measured from the middle of the drawing area.
+  function fromCentre(x, y) {
+    const r = stage.getBoundingClientRect();
+    return [x - (r.left + r.width / 2), y - (r.top + r.height / 2)];
+  }
+
+  // Zoom to z, keeping the spot (px, py) under the finger/mouse still.
+  function zoomTo(z, px = 0, py = 0) {
+    let s = Math.min(MAX_ZOOM, Math.max(1, z));
+    if (s < 1.02) s = 1;     // snap back to exactly "not zoomed" (avoids 1.0000000002)
+    tx = px - ((px - tx) * s) / zoom;
+    ty = py - ((py - ty) * s) / zoom;
+    zoom = s;
+    if (zoom === 1) { tx = 0; ty = 0; }
+    applyView();
+  }
+
   // ---- Drawing ----
 
+  // Line width in photo pixels. Divided by the zoom, so a line looks the same
+  // thickness on screen and you can draw finer details when zoomed in.
   function strokeWidth() {
-    return Math.max(2, Math.round(Math.max(canvas.width, canvas.height) * widthFraction));
+    return Math.max(1, Math.round((Math.max(canvas.width, canvas.height) * widthFraction) / zoom));
   }
 
   function drawStroke(s) {
@@ -164,18 +212,72 @@ export function openDrawMode(photoBlob, drawingBlob) {
     ];
   }
 
-  canvas.addEventListener('pointerdown', (e) => {
-    if (!ready || activePointer !== null) return;   // ignore a second finger
+  // Touch / mouse on the drawing area:
+  //   one finger (or left mouse button) draws,
+  //   two fingers pinch to zoom and drag to move,
+  //   right/middle mouse button drags to move, mouse wheel zooms.
+  const pointers = new Map();
+  let pinch = null;      // two-finger gesture: where it started
+  let mousePan = null;
+
+  stage.addEventListener('pointerdown', (e) => {
+    if (!ready) return;
     e.preventDefault();
-    activePointer = e.pointerId;
-    try { canvas.setPointerCapture(e.pointerId); } catch { /* keep drawing without capture */ }
-    activeStroke = { kind: 'stroke', color, width: strokeWidth(), points: [toCanvasPoint(e)] };
-    actions.push(activeStroke);
-    drawStroke(activeStroke);
-    undoBtn.disabled = false;
+    try { stage.setPointerCapture(e.pointerId); } catch { /* keep going without capture */ }
+    if (e.pointerType === 'mouse' && e.button !== 0) {
+      mousePan = { x: e.clientX, y: e.clientY, tx, ty };
+      return;
+    }
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pointers.size === 1) {
+      activePointer = e.pointerId;
+      activeStroke = { kind: 'stroke', color, width: strokeWidth(), points: [toCanvasPoint(e)] };
+      actions.push(activeStroke);
+      drawStroke(activeStroke);
+      undoBtn.disabled = false;
+    } else if (pointers.size === 2) {
+      // A second finger means zoom/move, not draw: take back the line just started.
+      if (activeStroke) {
+        const i = actions.lastIndexOf(activeStroke);
+        if (i !== -1) actions.splice(i, 1);
+        activeStroke = null;
+        activePointer = null;
+        redraw();
+      }
+      const [a, b] = [...pointers.values()];
+      pinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+        mid: fromCentre((a.x + b.x) / 2, (a.y + b.y) / 2),
+        zoom, tx, ty,
+      };
+    }
   });
 
-  canvas.addEventListener('pointermove', (e) => {
+  stage.addEventListener('pointermove', (e) => {
+    if (mousePan && e.pointerType === 'mouse') {
+      tx = mousePan.tx + (e.clientX - mousePan.x);
+      ty = mousePan.ty + (e.clientY - mousePan.y);
+      applyView();
+      return;
+    }
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pinch && pointers.size >= 2) {
+      // Zoom by how far apart the fingers are; move by where their middle goes.
+      const [a, b] = [...pointers.values()];
+      let z = Math.min(MAX_ZOOM, Math.max(1, pinch.zoom * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.dist)));
+      if (z < 1.02) z = 1;
+      const [mx, my] = fromCentre((a.x + b.x) / 2, (a.y + b.y) / 2);
+      // Keep the photo spot that was under the fingers' middle under it now.
+      tx = mx - (z * (pinch.mid[0] - pinch.tx)) / pinch.zoom;
+      ty = my - (z * (pinch.mid[1] - pinch.ty)) / pinch.zoom;
+      zoom = z;
+      if (zoom === 1) { tx = 0; ty = 0; }
+      applyView();
+      return;
+    }
     if (e.pointerId !== activePointer) return;
     e.preventDefault();
     // getCoalescedEvents gives every point the finger passed, for smoother lines.
@@ -194,16 +296,26 @@ export function openDrawMode(photoBlob, drawingBlob) {
     ctx.stroke();
   });
 
-  function endStroke(e) {
-    if (e.pointerId !== activePointer) return;
-    activePointer = null;
-    activeStroke = null;
-    redraw();   // redraw cleanly (joins the pieces)
+  function endPointer(e) {
+    if (mousePan && e.pointerType === 'mouse') { mousePan = null; return; }
+    pointers.delete(e.pointerId);
+    if (pointers.size < 2) pinch = null;
+    if (e.pointerId === activePointer) {
+      activePointer = null;
+      activeStroke = null;
+      redraw();   // redraw cleanly (joins the pieces)
+    }
   }
-  canvas.addEventListener('pointerup', endStroke);
-  canvas.addEventListener('pointercancel', endStroke);
-  // Extra guard for iPhone: never let a touch on the canvas scroll the page.
-  canvas.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  stage.addEventListener('pointerup', endPointer);
+  stage.addEventListener('pointercancel', endPointer);
+  stage.addEventListener('contextmenu', (e) => e.preventDefault());
+  stage.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const [px, py] = fromCentre(e.clientX, e.clientY);
+    zoomTo(zoom * Math.exp(-e.deltaY * 0.002), px, py);
+  }, { passive: false });
+  // Extra guard for iPhone: never let a touch here scroll the page or zoom the whole app.
+  stage.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
 
   // ---- Toolbar ----
 
@@ -224,6 +336,10 @@ export function openDrawMode(photoBlob, drawingBlob) {
         actions.push({ kind: 'clear' });
         redraw();
       }
+    } else if (btn.dataset.act === 'zoom-in') {
+      zoomTo(zoom * 1.6);
+    } else if (btn.dataset.act === 'zoom-out') {
+      zoomTo(zoom / 1.6);
     } else if (btn.dataset.act === 'done') {
       finish();
     }
