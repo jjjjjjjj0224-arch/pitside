@@ -57,6 +57,7 @@ export async function renderTeam(el, codeFromLink) {
 
         <form class="card" data-form="join" novalidate>
           <h2 class="section-title">Join a team</h2>
+          <p class="hint">Got a code from a teammate? Type it here.</p>
           <label class="label" for="join-code">Team code</label>
           <input id="join-code" class="input code-input" type="text" inputmode="text" autocomplete="off"
                  autocapitalize="characters" spellcheck="false" maxlength="${CODE_LENGTH}"
@@ -66,6 +67,7 @@ export async function renderTeam(el, codeFromLink) {
 
         <form class="card" data-form="create" novalidate>
           <h2 class="section-title">Or create a team</h2>
+          <p class="hint">First one on your team? Create it here and PitSide gives you a code to send to your teammates.</p>
           <label class="label" for="team-name">Team name</label>
           <input id="team-name" class="input" type="text" maxlength="60" autocomplete="off"
                  autocapitalize="words" placeholder="e.g. VEX 1234A">

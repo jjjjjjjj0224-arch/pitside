@@ -4,7 +4,7 @@
 //
 // When you change any app file, bump VERSION so phones download the new files.
 
-const VERSION = 'pitside-v1.1.1';
+const VERSION = 'pitside-v1.1.2';
 
 // Every file the app needs. Paths are relative to this file, so the app also
 // works from a sub-folder (for example GitHub Pages: /your-repo/).
