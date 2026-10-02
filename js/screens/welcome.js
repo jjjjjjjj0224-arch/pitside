@@ -13,7 +13,7 @@ export function renderWelcome(el) {
         <input id="welcome-name" class="input" type="text" autocomplete="name"
                autocapitalize="words" maxlength="60" enterkeyhint="go" required>
         <p class="form-error" role="alert" hidden>Type your name to continue.</p>
-        <p class="note">Entries are saved only on this phone. Nothing is uploaded.</p>
+        <p class="note">Entries are saved on this phone. Nothing is uploaded unless you join a team and share entries with it.</p>
         <button type="submit" class="btn btn-primary btn-block">Start</button>
       </form>
     </main>`;
@@ -31,6 +31,9 @@ export function renderWelcome(el) {
       return;
     }
     await saveSettings({ author: name });
-    go('#/home', { replace: true });
+    // Opened from an invite link? Continue to joining that team.
+    const code = sessionStorage.getItem('pitside-join');
+    sessionStorage.removeItem('pitside-join');
+    go(code ? `#/join/${code}` : '#/home', { replace: true });
   });
 }

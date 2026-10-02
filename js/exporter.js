@@ -74,7 +74,7 @@ function buildCsv(entries, names) {
 // Build the export ZIP: one PNG per entry, each voice note, and entries.csv.
 // onProgress(done, total) is called as each image is made.
 export async function buildExportZip(entries, settings, onProgress = () => {}) {
-  const sorted = [...entries].sort((a, b) => a.createdAt.localeCompare(b.createdAt));  // oldest first
+  const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
   for (let i = 0; i < sorted.length; i++) {

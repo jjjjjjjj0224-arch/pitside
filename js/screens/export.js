@@ -1,14 +1,17 @@
 // Export screen: pick entry types and a date range, then make a ZIP with
 // one PNG per entry, the voice notes, and entries.csv.
 
-import { getAllEntries } from '../db.js';
+import { getAllEntries, getAllTeamEntries } from '../db.js';
 import { getSettings } from '../settings.js';
+import { getTeam } from '../team.js';
+import { loadTeamFiles } from '../sync.js';
 import { goBack } from '../router.js';
 import { buildExportZip, canShareFile, downloadBlob, shareOrDownload } from '../exporter.js';
-import { TYPES, TYPE_LABELS, formatBytes, formatShortDate, toast } from '../ui.js';
+import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast } from '../ui.js';
 
 // Keep the user's choices while the app is open.
 const choice = {
+  source: 'mine',    // 'mine' | 'team' (whole team, when in a team)
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
   from: null,        // 'YYYY-MM-DD' for custom
@@ -43,6 +46,9 @@ function rangeBounds() {
 export async function renderExport(el) {
   const settings = getSettings();
   const entries = await getAllEntries();
+  const team = getTeam();
+  const teamEntries = team ? await getAllTeamEntries() : [];
+  if (!team) choice.source = 'mine';
   if (!choice.from) {
     const today = new Date();
     choice.to = toInputDate(today);
@@ -56,6 +62,15 @@ export async function renderExport(el) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page export">
+      ${team ? `
+      <fieldset class="field">
+        <legend class="label">Entries from</legend>
+        <div class="option-list">
+          <label class="option"><input type="radio" name="source" value="mine"> <span>Just mine</span></label>
+          <label class="option"><input type="radio" name="source" value="team"> <span>Whole team (${esc(team.teamName)})</span></label>
+        </div>
+      </fieldset>` : ''}
+
       <fieldset class="field">
         <legend class="label">Entry types</legend>
         <div class="chips">
@@ -102,7 +117,8 @@ export async function renderExport(el) {
 
   function matching() {
     const { from, to } = rangeBounds();
-    return entries.filter((e) => {
+    const source = choice.source === 'team' ? teamEntries : entries;
+    return source.filter((e) => {
       if (!choice.types.has(e.type)) return false;
       const t = new Date(e.createdAt);
       return (!from || t >= from) && (!to || t <= to);
@@ -112,6 +128,7 @@ export async function renderExport(el) {
   function update() {
     el.querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-pressed', String(choice.types.has(b.dataset.type))));
     el.querySelectorAll('input[name="range"]').forEach((r) => { r.checked = r.value === choice.range; });
+    el.querySelectorAll('input[name="source"]').forEach((r) => { r.checked = r.value === choice.source; });
     $('.custom-dates').hidden = choice.range !== 'custom';
     $('[data-date="from"]').value = choice.from;
     $('[data-date="to"]').value = choice.to;
@@ -142,6 +159,24 @@ export async function renderExport(el) {
     choice.range = r.value;
     update();
   }));
+  el.querySelectorAll('input[name="source"]').forEach((r) => r.addEventListener('change', () => {
+    choice.source = r.value;
+    update();
+  }));
+
+  // Team export: teammates' photos and voice notes are downloaded first
+  // (kept on the phone afterwards). My own entries use the copies on this phone.
+  async function withFiles(list) {
+    if (choice.source !== 'team') return list;
+    const mine = new Map(entries.map((e) => [e.id, e]));
+    const ready = [];
+    for (let i = 0; i < list.length; i++) {
+      exportBtn.textContent = `Downloading… ${i + 1} of ${list.length}`;
+      const rec = list[i];
+      ready.push(mine.get(rec.id) || await loadTeamFiles(rec, ['photo', 'drawing', 'audio']));
+    }
+    return ready;
+  }
   el.querySelectorAll('[data-date]').forEach((input) => input.addEventListener('change', () => {
     if (input.value) choice[input.dataset.date] = input.value;
     update();
@@ -149,10 +184,21 @@ export async function renderExport(el) {
   $('[data-act="back"]').addEventListener('click', () => goBack('#/home'));
 
   exportBtn.addEventListener('click', async () => {
-    const list = matching();
-    if (!list.length || working) return;
+    if (!matching().length || working) return;
     working = true;
     exportBtn.disabled = true;
+    let list;
+    try {
+      list = await withFiles(matching());
+    } catch (err) {
+      console.warn(err);
+      errorEl.textContent = "Couldn't download your teammates' photos. Connect to the internet and try again.";
+      errorEl.hidden = false;
+      working = false;
+      exportBtn.disabled = false;
+      exportBtn.textContent = 'Export';
+      return;
+    }
     try {
       const zip = await buildExportZip(list, settings, (done, total) => {
         exportBtn.textContent = `Making images… ${done} of ${total}`;

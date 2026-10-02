@@ -6,7 +6,17 @@ import { getSettings } from '../settings.js';
 import { goBack } from '../router.js';
 import { renderEntryImage } from '../render.js';
 import { baseName, audioFileName, shareOrDownload } from '../exporter.js';
+import { getTeam } from '../team.js';
+import { queueRemoteDelete } from '../sync.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
+
+// "Shared with VEX 1234A" / "Waiting to upload" / "Only on this phone"
+function shareStatus(entry, team) {
+  if (!team) return '';
+  if (entry.shared === true && entry.sync === 'synced' && entry.remote) return `Shared with ${team.teamName}`;
+  if (entry.shared === true) return 'Waiting to upload to your team (uploads when online)';
+  return 'Only on this phone (not shared with your team)';
+}
 
 export async function renderDetail(el, id) {
   const entry = await getEntry(id);
@@ -20,6 +30,7 @@ export async function renderDetail(el, id) {
   const urls = new UrlBag();
   const settings = getSettings();
   const accent = settings.export[entry.type].accent;
+  const team = getTeam();
   const edited = entry.updatedAt && entry.updatedAt.slice(0, 16) !== entry.createdAt.slice(0, 16);
 
   el.innerHTML = `
@@ -53,6 +64,7 @@ export async function renderDetail(el, id) {
         <div><dt>Author</dt><dd>${esc(entry.author)}</dd></div>
         <div><dt>Date</dt><dd>${esc(formatDateTime(entry.createdAt))}</dd></div>
         ${edited ? `<div><dt>Edited</dt><dd>${esc(formatDateTime(entry.updatedAt))}</dd></div>` : ''}
+        ${team ? `<div><dt>Team</dt><dd>${esc(shareStatus(entry, team))}</dd></div>` : ''}
       </dl>
 
       <div class="button-row three">
@@ -90,12 +102,15 @@ export async function renderDetail(el, id) {
   el.querySelector('[data-act="delete"]').addEventListener('click', async () => {
     const ok = await confirmDialog({
       title: 'Delete this entry?',
-      message: 'The photo, drawing, voice note and caption will be removed from this phone. This can\'t be undone.',
+      message: entry.remote
+        ? 'It will be removed from this phone and from your team. This can\'t be undone.'
+        : 'The photo, drawing, voice note and caption will be removed from this phone. This can\'t be undone.',
       confirmText: 'Delete',
       danger: true,
     });
     if (!ok) return;
     await deleteEntry(entry.id);
+    await queueRemoteDelete(entry);   // also remove the team copy (now, or when back online)
     toast('Entry deleted');
     goBack('#/home');
   });

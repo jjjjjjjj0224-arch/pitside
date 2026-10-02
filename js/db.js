@@ -2,11 +2,15 @@
 // Nothing is ever sent to a server.
 //
 // Stores:
-//   entries  - one record per entry (photo, drawing, audio are Blobs)
-//   settings - one record with key "app"
+//   entries     - my entries (photo, drawing, audio are Blobs)
+//   settings    - small values by key: "app" (settings), "session" (team sign-in),
+//                 "team" (which team I'm in), "pendingDeletes" (to remove from the team)
+//   teamEntries - copies of my team's shared entries, so they can be viewed offline
+//
+// The only things ever sent anywhere are entries you share with a team (see sync.js).
 
 const DB_NAME = 'pitside';
-const DB_VERSION = 1;
+const DB_VERSION = 2;   // 2 = added teamEntries
 
 let dbPromise = null;
 
@@ -23,6 +27,9 @@ function openDB() {
         }
         if (!db.objectStoreNames.contains('settings')) {
           db.createObjectStore('settings');
+        }
+        if (!db.objectStoreNames.contains('teamEntries')) {
+          db.createObjectStore('teamEntries', { keyPath: 'id' });
         }
       };
       req.onsuccess = () => {
@@ -57,7 +64,7 @@ async function run(storeName, mode, makeRequest) {
 // All entries, newest first.
 export async function getAllEntries() {
   const all = await run('entries', 'readonly', (s) => s.getAll());
-  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 }
 
 export const getEntry = (id) => run('entries', 'readonly', (s) => s.get(id));
@@ -65,10 +72,25 @@ export const putEntry = (entry) => run('entries', 'readwrite', (s) => s.put(entr
 export const deleteEntry = (id) => run('entries', 'readwrite', (s) => s.delete(id));
 export const deleteAllEntries = () => run('entries', 'readwrite', (s) => s.clear());
 
-// ---- Settings ----
+// ---- Team entries (copies of what teammates shared) ----
 
-export const readSettings = () => run('settings', 'readonly', (s) => s.get('app'));
-export const writeSettings = (value) => run('settings', 'readwrite', (s) => s.put(value, 'app'));
+export async function getAllTeamEntries() {
+  const all = await run('teamEntries', 'readonly', (s) => s.getAll());
+  return all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+}
+export const getTeamEntry = (id) => run('teamEntries', 'readonly', (s) => s.get(id));
+export const putTeamEntry = (entry) => run('teamEntries', 'readwrite', (s) => s.put(entry));
+export const deleteTeamEntry = (id) => run('teamEntries', 'readwrite', (s) => s.delete(id));
+export const clearTeamEntries = () => run('teamEntries', 'readwrite', (s) => s.clear());
+
+// ---- Settings and other small values ----
+
+export const readKey = (key) => run('settings', 'readonly', (s) => s.get(key));
+export const writeKey = (key, value) => run('settings', 'readwrite', (s) => s.put(value, key));
+export const deleteKey = (key) => run('settings', 'readwrite', (s) => s.delete(key));
+
+export const readSettings = () => readKey('app');
+export const writeSettings = (value) => writeKey('app', value);
 
 // ---- Storage ----
 

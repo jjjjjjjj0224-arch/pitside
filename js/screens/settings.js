@@ -7,6 +7,8 @@ import { goBack } from '../router.js';
 import { renderEntryImage } from '../render.js';
 import { canvasToBlob } from '../image.js';
 import { audioFileName } from '../exporter.js';
+import { isCloudConfigured } from '../cloud.js';
+import { getTeam, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
 
 const FIELD_LABELS = [
@@ -33,9 +35,16 @@ export async function renderSettings(el) {
         <label class="label" for="author">Your name</label>
         <input id="author" class="input" type="text" maxlength="60" autocomplete="name"
                autocapitalize="words" value="${esc(settings.author)}">
-        <p class="hint">Added as the author of new entries.</p>
+        <p class="hint">Added as the author of new entries${getTeam() ? ', and the name your team sees' : ''}.</p>
         <p class="form-error" data-author-error role="alert" hidden>Your name can't be empty.</p>
       </section>
+
+      ${isCloudConfigured() ? `
+      <section class="card">
+        <h2 class="section-title">Team</h2>
+        <p>${getTeam() ? `You're in <strong>${esc(getTeam().teamName)}</strong>.` : 'Not in a team yet.'}</p>
+        <a class="btn btn-secondary btn-block" href="#/team">${getTeam() ? 'Open team' : 'Join or create a team'}</a>
+      </section>` : ''}
 
       <section class="card">
         <h2 class="label" id="default-type-label">Default entry type</h2>
@@ -61,12 +70,14 @@ export async function renderSettings(el) {
       <section class="card">
         <h2 class="section-title">Privacy</h2>
         <p>PitSide stores your name, your settings and your entries (photos, drawings, voice notes, captions,
-          match numbers and dates) in this browser on this phone only. There is no account and nothing is uploaded.
-          Entries only leave the phone when you tap Share or Export.</p>
+          match numbers and dates) in this browser on this phone. There is no email, password or account to make.</p>
+        <p>If you join a team, entries with "Share with team" switched on are uploaded to your team's online
+          storage (Supabase), with your name. Only members of your team can see them. Entries that aren't
+          shared never leave the phone, unless you tap Share or Export.</p>
         <p class="hint">Deleting the app or clearing this browser's website data also deletes your entries, so export them regularly.</p>
       </section>
 
-      <p class="hint center">PitSide v1.0</p>
+      <p class="hint center">PitSide v1.1</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -84,6 +95,8 @@ export async function renderSettings(el) {
     authorError.hidden = true;
     settings = await saveSettings({ author: name });
     toast('Name saved');
+    // Teammates see the new name too (if online; otherwise it stays as before).
+    if (getTeam()) renameMe(name).catch((err) => console.warn('Team name not updated', err));
   });
 
   // ---- Default type ----
@@ -155,7 +168,8 @@ export async function renderSettings(el) {
   $('[data-act="delete-all"]').addEventListener('click', async () => {
     const first = await confirmDialog({
       title: 'Delete all entries?',
-      message: `This removes all ${entries.length} entries from this phone. Export first if you still need them.`,
+      message: `This removes all ${entries.length} entries from this phone. Export first if you still need them.`
+        + `${getTeam() ? ' Entries you already shared stay with your team.' : ''}`,
       confirmText: 'Delete all',
       danger: true,
     });

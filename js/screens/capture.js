@@ -8,6 +8,8 @@ import { go, goBack, getPreviousHash, canGoBack } from '../router.js';
 import { resizePhoto, makeThumbnail } from '../image.js';
 import { openDrawMode } from '../draw.js';
 import { createVoiceNote } from '../recorder.js';
+import { getTeam } from '../team.js';
+import { syncSoon } from '../sync.js';
 import { TYPES, TYPE_LABELS, STAGES, STAGE_LABELS, esc, uuid, confirmDialog, toast, UrlBag } from '../ui.js';
 
 const SAVE_FAILED = "Couldn't save. Free up space on your phone and try again.";
@@ -21,6 +23,8 @@ export async function renderCapture(el, id) {
     return {};
   }
 
+  const team = getTeam();
+
   // Everything the user has entered so far. Kept in memory until Save, so a
   // failed save never loses anything.
   const draft = existing
@@ -33,6 +37,7 @@ export async function renderCapture(el, id) {
       audio: existing.audio || null,
       audioMime: existing.audioMime || null,
       matchNumber: existing.matchNumber || '',
+      shared: existing.shared === true,
     }
     : {
       type: settings.defaultType,
@@ -43,6 +48,7 @@ export async function renderCapture(el, id) {
       audio: null,
       audioMime: null,
       matchNumber: '',
+      shared: true,          // "Share with team" starts on (only used when in a team)
     };
 
   let dirty = false;          // true once anything is changed
@@ -115,6 +121,15 @@ export async function renderCapture(el, id) {
           </div>
         </div>
       </div>
+
+      ${team ? `
+      <label class="switch-row">
+        <span>
+          <span class="label">Share with team</span>
+          <span class="hint switch-hint">${esc(team.teamName)} can see this entry</span>
+        </span>
+        <input type="checkbox" class="switch" data-share ${draft.shared ? 'checked' : ''}>
+      </label>` : ''}
     </main>
     <div class="savebar">
       <div class="savebar-inner">
@@ -236,6 +251,17 @@ export async function renderCapture(el, id) {
   // ---- Caption and match number ----
 
   captionEl.addEventListener('input', () => { draft.caption = captionEl.value; markDirty(); });
+
+  // ---- Share with team ----
+  const shareSwitch = $('[data-share]');
+  if (shareSwitch) {
+    const hint = $('.switch-hint');
+    const showShare = () => {
+      hint.textContent = shareSwitch.checked ? `${team.teamName} can see this entry` : 'Only on this phone';
+    };
+    shareSwitch.addEventListener('change', () => { draft.shared = shareSwitch.checked; markDirty(); showShare(); });
+    showShare();
+  }
   matchEl.addEventListener('input', () => { draft.matchNumber = matchEl.value; markDirty(); });
 
   // When the phone keyboard opens, shrink the photo so the caption stays visible.
@@ -327,9 +353,18 @@ export async function renderCapture(el, id) {
         updatedAt: now,
         thumb: await makeThumbnail(draft.photo, draft.drawing),  // small picture for the Home list
       };
+      // Team sharing: saved on the phone first, uploaded later by sync.js.
+      // (Read the latest upload info, in case a sync finished while editing.)
+      const latest = existing ? await getEntry(existing.id) : null;
+      entry.remote = latest ? latest.remote || null : null;
+      if (team) entry.shared = draft.shared;
+      else if (existing) entry.shared = existing.shared;
+      entry.sync = entry.shared === true || entry.remote ? 'pending' : null;
+
       await putEntry(entry);
       dirty = false;
       requestPersistentStorage();   // ask the browser to keep our data (first save)
+      if (entry.sync === 'pending') syncSoon();
       if (entry.stage && entry.stage !== settings.lastStage) {
         saveSettings({ lastStage: entry.stage }).catch(() => {});
       }

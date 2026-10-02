@@ -4,7 +4,7 @@
 //
 // When you change any app file, bump VERSION so phones download the new files.
 
-const VERSION = 'pitside-v1.0.0';
+const VERSION = 'pitside-v1.1.0';
 
 // Every file the app needs. Paths are relative to this file, so the app also
 // works from a sub-folder (for example GitHub Pages: /your-repo/).
@@ -24,6 +24,10 @@ const APP_SHELL = [
   './js/render.js',
   './js/zip.js',
   './js/exporter.js',
+  './js/config.js',
+  './js/cloud.js',
+  './js/team.js',
+  './js/sync.js',
   './js/screens/welcome.js',
   './js/screens/home.js',
   './js/screens/capture.js',
@@ -31,6 +35,8 @@ const APP_SHELL = [
   './js/screens/detail.js',
   './js/screens/export.js',
   './js/screens/settings.js',
+  './js/screens/team.js',
+  './js/screens/teamEntry.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
@@ -60,6 +66,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
+  // Team sync requests (Supabase) go straight to the internet, never the cache.
   if (new URL(req.url).origin !== self.location.origin) return;
 
   // Opening the app (any page URL) always gets the cached index.html.
