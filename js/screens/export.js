@@ -5,6 +5,7 @@ import { getAllEntries, getAllTeamEntries } from '../db.js';
 import { getSettings } from '../settings.js';
 import { getTeam } from '../team.js';
 import { loadTeamFiles } from '../sync.js';
+import { photosOf } from '../image.js';
 import { goBack } from '../router.js';
 import { buildExportZip, canShareFile, downloadBlob, shareOrDownload } from '../exporter.js';
 import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast } from '../ui.js';
@@ -12,6 +13,7 @@ import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast } from '..
 // Keep the user's choices while the app is open.
 const choice = {
   source: 'mine',    // 'mine' | 'team' (whole team, when in a team)
+  includePhotos: true,   // add a photos/ folder with the full-size photos
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
   from: null,        // 'YYYY-MM-DD' for custom
@@ -91,11 +93,16 @@ export async function renderExport(el) {
         <p class="hint range-text"></p>
       </fieldset>
 
+      <label class="option">
+        <input type="checkbox" data-include-photos>
+        <span>Also include the full-size photos (a "photos" folder, for writing the notebook)</span>
+      </label>
+
       <p class="match-count" aria-live="polite"></p>
       <p class="form-error" role="alert" hidden></p>
 
       <button type="button" class="btn btn-primary btn-block btn-lg" data-act="export">Export</button>
-      <p class="hint">Makes a ZIP with one image per entry (ready for Google Slides), each voice note, and a spreadsheet file (entries.csv).</p>
+      <p class="hint">Makes a ZIP with one slide image per photo (ready for Google Slides), each voice note, a spreadsheet file (entries.csv), and the photos themselves if ticked above.</p>
 
       <section class="export-result" hidden aria-live="polite">
         <h2 class="label">ZIP ready</h2>
@@ -129,6 +136,7 @@ export async function renderExport(el) {
     el.querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-pressed', String(choice.types.has(b.dataset.type))));
     el.querySelectorAll('input[name="range"]').forEach((r) => { r.checked = r.value === choice.range; });
     el.querySelectorAll('input[name="source"]').forEach((r) => { r.checked = r.value === choice.source; });
+    $('[data-include-photos]').checked = choice.includePhotos;
     $('.custom-dates').hidden = choice.range !== 'custom';
     $('[data-date="from"]').value = choice.from;
     $('[data-date="to"]').value = choice.to;
@@ -163,6 +171,10 @@ export async function renderExport(el) {
     choice.source = r.value;
     update();
   }));
+  $('[data-include-photos]').addEventListener('change', (e) => {
+    choice.includePhotos = e.target.checked;
+    update();
+  });
 
   // Team export: teammates' photos and voice notes are downloaded first
   // (kept on the phone afterwards). My own entries use the copies on this phone.
@@ -173,7 +185,7 @@ export async function renderExport(el) {
     for (let i = 0; i < list.length; i++) {
       exportBtn.textContent = `Downloading… ${i + 1} of ${list.length}`;
       const rec = list[i];
-      ready.push(mine.get(rec.id) || await loadTeamFiles(rec, ['photo', 'drawing', 'audio']));
+      ready.push(mine.get(rec.id) || await loadTeamFiles(rec, { photos: true, audio: true }));
     }
     return ready;
   }
@@ -202,11 +214,14 @@ export async function renderExport(el) {
     try {
       const zip = await buildExportZip(list, settings, (done, total) => {
         exportBtn.textContent = `Making images… ${done} of ${total}`;
-      });
+      }, { includePhotos: choice.includePhotos });
       const name = `pitside_export_${toInputDate(new Date())}.zip`;
       zipFile = new File([zip], name, { type: 'application/zip' });
       const voiceCount = list.filter((e) => e.audio).length;
-      $('.result-text').textContent = `${name} · ${list.length} ${list.length === 1 ? 'image' : 'images'}`
+      const imageCount = list.reduce((n, e) => n + Math.max(1, photosOf(e).length), 0);
+      const photoCount = choice.includePhotos ? list.reduce((n, e) => n + photosOf(e).length, 0) : 0;
+      $('.result-text').textContent = `${name} · ${imageCount} slide ${imageCount === 1 ? 'image' : 'images'}`
+        + `${photoCount ? ` · ${photoCount} ${photoCount === 1 ? 'photo' : 'photos'}` : ''}`
         + `${voiceCount ? ` · ${voiceCount} voice ${voiceCount === 1 ? 'note' : 'notes'}` : ''} · ${formatBytes(zip.size)}`;
       result.hidden = false;
       const shareable = canShareFile(zipFile);

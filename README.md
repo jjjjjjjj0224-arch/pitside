@@ -1,8 +1,16 @@
-# PitSide v1.1
+# PitSide v1.2
 
 A mobile-first Progressive Web App for VEX team members: save a quick evidence entry
-(photo + caption and/or voice note + entry type) in under 30 seconds, with no internet,
+(photos + caption and/or voice note + entry type) in under 30 seconds, with no internet,
 then export entries as slide-ready images for the engineering notebook in Google Slides.
+
+- **Several photos per entry (new in v1.2):** up to 10. Switch with **‹ Prev / Next ›**,
+  a swipe, or the numbered thumbnails; **+ Add photo** / **+ Add from gallery** adds more.
+  Each photo has its own drawing. Exports as one slide image per photo ("Photo 2 of 3").
+- **Download photos:** every photo on an entry (yours or a teammate's) has **Download**,
+  plus **Download all photos**. On a phone this opens the share sheet ("Save Image");
+  on a laptop it saves to Downloads. The Export ZIP can also include a `photos/` folder.
+  Downloads include the drawing; the saved original photo is never changed.
 
 - Plain HTML, CSS and JavaScript (ES modules). No framework, no build step, no libraries.
 - Entries are saved on the device in IndexedDB first, so everything works offline.
@@ -53,6 +61,9 @@ Open it once while online so it can cache itself. After that it works in airplan
 **Important on iPhone:** install it to the Home Screen. If PitSide is only used in a Safari
 tab, iOS may delete website data after about 7 days without visiting. Home Screen apps are
 not affected. Export regularly anyway.
+
+**Updating from v1.1 with teams:** run `supabase/schema.sql` again in the Supabase SQL Editor
+once. It adds the `photos` column and keeps all existing data.
 
 ## Updating the app after you change code
 
@@ -139,6 +150,7 @@ js/recorder.js          Voice note: MediaRecorder, hold-to-record or tap-to-star
 js/render.js            Draws one entry as a 1920×1080 or 1080×1080 PNG for Slides.
 js/zip.js               A small ZIP writer (headers + CRC-32 checksums), so no library is needed.
 js/exporter.js          File names, entries.csv, building the ZIP, Share or Download.
+js/gallery.js           The photo list on the detail screens, with Download buttons.
 js/config.js            Supabase Project URL + publishable key (empty = no team features).
 js/cloud.js             Talks to Supabase with plain fetch(): sign-in, database, file storage.
 js/team.js              Which team I'm in; create, join, leave, members, new code.
@@ -173,8 +185,7 @@ when online.
 | `id` | random UUID (same id online when shared) |
 | `type` | `build` / `competition` / `programming` |
 | `stage` | `define` / `brainstorm` / `select` / `cad` / `build` / `test` / `analysis` / `null` |
-| `photo` | JPEG Blob, longest side ≤ 1600 px, quality 0.8 (or `null` for caption-only) |
-| `drawing` | transparent PNG Blob, same size as photo, or `null` |
+| `photos` | list of up to 10 `{ photo, drawing }`: photo = JPEG Blob, longest side ≤ 1600 px, quality 0.8; drawing = transparent PNG Blob the same size, or `null`. Empty for caption-only entries. (Entries saved before v1.2 have single `photo` / `drawing` fields; `photosOf()` in image.js reads both.) |
 | `caption` | text |
 | `audio`, `audioMime` | voice note Blob (≤ 30 s) and its type, or `null` |
 | `matchNumber` | competition only, else `null` |

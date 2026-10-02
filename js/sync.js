@@ -21,8 +21,18 @@ import {
 import { isCloudConfigured, table, files, friendlyError } from './cloud.js';
 import { getTeam, refreshTeam } from './team.js';
 import { audioExtension } from './exporter.js';
+import { photosOf } from './image.js';
 
-const FILE_KEYS = ['photo', 'drawing', 'thumb', 'audio'];
+// Every online file path of an entry (photos, drawings, thumbnail, voice note).
+// remote = { teamId, thumb, audio, photos: [{ photo, drawing }] }
+// (Entries uploaded before multiple photos have single photo/drawing paths instead.)
+function remotePaths(remote) {
+  if (!remote) return [];
+  return [
+    remote.photo, remote.drawing, remote.thumb, remote.audio,
+    ...(remote.photos || []).flatMap((p) => [p.photo, p.drawing]),
+  ].filter(Boolean);
+}
 
 let status = { state: 'idle', pending: 0, error: null, lastSynced: null };
 let running = null;
@@ -112,20 +122,28 @@ async function uploadEntry(e, team) {
   // (and an interrupted upload can safely be retried).
   const stamp = Date.parse(e.updatedAt);
   const folder = `${team.teamId}/${team.userId}/${e.id}`;
-  const sources = {
-    photo: [e.photo, 'jpg', 'image/jpeg'],
-    drawing: [e.photo ? e.drawing : null, 'png', 'image/png'],
-    thumb: [e.thumb, 'jpg', 'image/jpeg'],
-    audio: [e.audio, audioExtension(e.audioMime), plainMime(e.audioMime) || 'audio/webm'],
-  };
-  const paths = {};
-  for (const key of FILE_KEYS) {
-    const [blob, ext, mime] = sources[key];
-    if (!blob) { paths[key] = null; continue; }
-    paths[key] = `${folder}/${stamp}-${key}.${ext}`;
-    const alreadyThere = e.remote && e.remote.teamId === team.teamId && e.remote[key] === paths[key];
-    if (!alreadyThere) await files.upload(paths[key], blob, mime);
+  const before = new Set(e.remote && e.remote.teamId === team.teamId ? remotePaths(e.remote) : []);
+
+  async function put(blob, name, mime) {
+    if (!blob) return null;
+    const path = `${folder}/${stamp}-${name}`;
+    if (!before.has(path)) await files.upload(path, blob, mime);
+    return path;
   }
+
+  const photos = [];
+  const list = photosOf(e);
+  for (let i = 0; i < list.length; i++) {
+    photos.push({
+      photo: await put(list[i].photo, `photo-${i + 1}.jpg`, 'image/jpeg'),
+      drawing: await put(list[i].drawing, `drawing-${i + 1}.png`, 'image/png'),
+    });
+  }
+  const paths = {
+    thumb: await put(e.thumb, 'thumb.jpg', 'image/jpeg'),
+    audio: await put(e.audio, `audio.${audioExtension(e.audioMime)}`, plainMime(e.audioMime) || 'audio/webm'),
+    photos,
+  };
 
   await table.upsert('entries', {
     id: e.id,
@@ -136,8 +154,9 @@ async function uploadEntry(e, team) {
     caption: e.caption || '',
     match_number: e.matchNumber || null,
     author: e.author,
-    photo_path: paths.photo,
-    drawing_path: paths.drawing,
+    photos,                                              // [{ photo, drawing }] paths
+    photo_path: photos[0] ? photos[0].photo : null,      // first photo (older versions read this)
+    drawing_path: photos[0] ? photos[0].drawing : null,
     thumb_path: paths.thumb,
     audio_path: paths.audio,
     audio_mime: e.audio ? plainMime(e.audioMime) : null,
@@ -146,11 +165,9 @@ async function uploadEntry(e, team) {
   });
 
   // Remove the files of the previous version.
-  if (e.remote && e.remote.teamId === team.teamId) {
-    const used = new Set(Object.values(paths));
-    const old = FILE_KEYS.map((k) => e.remote[k]).filter((p) => p && !used.has(p));
-    await files.remove(old).catch((err) => console.warn('Old files not removed', err));
-  }
+  const used = new Set(remotePaths(paths));
+  const old = [...before].filter((p) => !used.has(p));
+  await files.remove(old).catch((err) => console.warn('Old files not removed', err));
 
   // The entry may have been edited while uploading: then it stays "pending".
   const current = await getEntry(e.id);
@@ -166,7 +183,7 @@ async function uploadEntry(e, team) {
 // next sync tries again; deleting a row or file twice is harmless.)
 async function unshareEntry(e) {
   await table.remove('entries', `id=eq.${e.id}`);
-  await files.remove(FILE_KEYS.map((k) => e.remote[k]));
+  await files.remove(remotePaths(e.remote));
   await deleteTeamEntry(e.id);
   const current = await getEntry(e.id);
   if (current) await putEntry({ ...current, remote: null, sync: 'synced' });
@@ -178,7 +195,7 @@ async function unshareEntry(e) {
 export async function queueRemoteDelete(entry) {
   if (!entry.remote) return;
   const list = (await readKey('pendingDeletes')) || [];
-  list.push({ id: entry.id, paths: FILE_KEYS.map((k) => entry.remote[k]).filter(Boolean) });
+  list.push({ id: entry.id, paths: remotePaths(entry.remote) });
   await writeKey('pendingDeletes', list);
   await deleteTeamEntry(entry.id);
   syncSoon();
@@ -197,7 +214,12 @@ async function pushDeletes() {
 
 // ---- Download the team's entries ----
 
+// A team entry as stored on the phone. paths = where its files are online;
+// photos/thumb/audio = the downloaded files (thumb at once, the rest when opened/exported).
 function fromRow(r) {
+  const photoPaths = Array.isArray(r.photos) && r.photos.length
+    ? r.photos
+    : (r.photo_path ? [{ photo: r.photo_path, drawing: r.drawing_path }] : []);   // older rows
   return {
     id: r.id,
     teamId: r.team_id,
@@ -210,9 +232,10 @@ function fromRow(r) {
     audioMime: r.audio_mime,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-    paths: { photo: r.photo_path, drawing: r.drawing_path, thumb: r.thumb_path, audio: r.audio_path },
-    // Blobs are filled in when downloaded: thumb now, the rest when viewed/exported.
-    thumb: null, photo: null, drawing: null, audio: null,
+    paths: { thumb: r.thumb_path, audio: r.audio_path, photos: photoPaths },
+    photos: photoPaths.map(() => ({ photo: null, drawing: null })),
+    thumb: null,
+    audio: null,
   };
 }
 
@@ -226,13 +249,17 @@ async function pullTeamEntries(team) {
     seen.add(row.id);
     const rec = fromRow(row);
     const old = cached.get(row.id);
-    if (old && old.updatedAt === rec.updatedAt) {
-      for (const k of FILE_KEYS) rec[k] = old[k];      // unchanged: keep downloaded files
+    if (old && old.updatedAt === rec.updatedAt && Array.isArray(old.photos)) {
+      rec.photos = old.photos;   // unchanged: keep downloaded files
+      rec.thumb = old.thumb;
+      rec.audio = old.audio;
     }
     if (row.user_id === team.userId && mine.has(row.id)) {
       // My own entry: its files are already on this phone, don't store them twice.
       rec.localCopy = true;
-      for (const k of FILE_KEYS) rec[k] = null;
+      rec.photos = rec.photos.map(() => ({ photo: null, drawing: null }));
+      rec.thumb = null;
+      rec.audio = null;
     } else if (!rec.thumb && rec.paths.thumb) {
       rec.thumb = await files.download(rec.paths.thumb).catch(() => null);
     }
@@ -243,16 +270,40 @@ async function pullTeamEntries(team) {
   }
 }
 
-// Download the full photo / drawing / voice note of a team entry (and keep
-// them on the phone for next time). keys: e.g. ['photo', 'drawing'].
-export async function loadTeamFiles(rec, keys) {
+// Download the full photos (with drawings) and/or voice note of a team entry,
+// and keep them on the phone for next time. what: { photos: true, audio: true }
+export async function loadTeamFiles(rec, what) {
+  upgradeTeamRecord(rec);
   let changed = false;
-  for (const key of keys) {
-    if (!rec[key] && rec.paths[key]) {
-      rec[key] = await files.download(rec.paths[key]);
-      changed = true;
+  if (what.photos) {
+    for (let i = 0; i < rec.paths.photos.length; i++) {
+      const p = rec.paths.photos[i];
+      const got = rec.photos[i] || (rec.photos[i] = { photo: null, drawing: null });
+      if (!got.photo && p.photo) { got.photo = await files.download(p.photo); changed = true; }
+      if (!got.drawing && p.drawing) { got.drawing = await files.download(p.drawing); changed = true; }
     }
+  }
+  if (what.audio && !rec.audio && rec.paths.audio) {
+    rec.audio = await files.download(rec.paths.audio);
+    changed = true;
   }
   if (changed) await putTeamEntry(rec);
   return rec;
+}
+
+// Team copies saved by v1.1 (one photo) -> the photo-list format. Safe to call twice.
+export function upgradeTeamRecord(rec) {
+  if (!rec.paths.photos) {
+    rec.paths.photos = rec.paths.photo ? [{ photo: rec.paths.photo, drawing: rec.paths.drawing || null }] : [];
+  }
+  if (!Array.isArray(rec.photos)) {
+    rec.photos = rec.paths.photos.map((_, i) => (i === 0 && rec.photo ? { photo: rec.photo, drawing: rec.drawing || null } : { photo: null, drawing: null }));
+  }
+  return rec;
+}
+
+// Every online file of a team entry (used when the owner removes it).
+export function teamEntryPaths(rec) {
+  upgradeTeamRecord(rec);
+  return [rec.paths.thumb, rec.paths.audio, ...rec.paths.photos.flatMap((p) => [p.photo, p.drawing])].filter(Boolean);
 }

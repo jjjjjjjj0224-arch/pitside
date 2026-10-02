@@ -116,5 +116,6 @@ export async function isStoragePersistent() {
 export function entryBytes(entry) {
   const blobSize = (b) => (b && b.size) || 0;
   const textSize = (entry.caption || '').length * 2;
-  return blobSize(entry.photo) + blobSize(entry.drawing) + blobSize(entry.audio) + blobSize(entry.thumb) + textSize;
+  const photoSize = (entry.photos || []).reduce((n, p) => n + blobSize(p.photo) + blobSize(p.drawing), 0);
+  return photoSize + blobSize(entry.photo) + blobSize(entry.drawing) + blobSize(entry.audio) + blobSize(entry.thumb) + textSize;
 }

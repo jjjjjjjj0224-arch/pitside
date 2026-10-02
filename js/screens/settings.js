@@ -77,7 +77,7 @@ export async function renderSettings(el) {
         <p class="hint">Deleting the app or clearing this browser's website data also deletes your entries, so export them regularly.</p>
       </section>
 
-      <p class="hint center">PitSide v1.1</p>
+      <p class="hint center">PitSide v1.2</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);

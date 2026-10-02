@@ -250,6 +250,45 @@ h1:focus { outline: none; }
   background: rgba(17, 24, 39, 0.75); color: #fff; font-weight: 600;
 }
 
+/* ---------- Several photos ---------- */
+
+.photo-section { display: flex; flex-direction: column; gap: 10px; }
+.photo-filled { touch-action: pan-y; }          /* left/right swipes switch photos */
+.photo-count {
+  position: absolute; top: 10px; left: 10px;
+  background: rgba(17, 24, 39, 0.85); color: #fff;
+  padding: 4px 10px; border-radius: 999px; font-size: 15px; font-weight: 700;
+}
+.photo-nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  min-height: 48px; padding: 8px 12px;
+}
+.photo-prev { left: 8px; }
+.photo-next { right: 8px; }
+.photo-nav:disabled { opacity: 0.35; }
+.photo-actions .btn { min-width: 0; flex: 1; max-width: 120px; padding: 10px 8px; }
+
+.photo-strip { display: flex; flex-direction: column; gap: 10px; }
+.strip-list { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 6px; scrollbar-width: thin; }
+.strip-thumb {
+  position: relative; flex: none; width: 64px; height: 64px; padding: 0;
+  border: 3px solid transparent; border-radius: 10px; overflow: hidden;
+  background: #E5E7EB; cursor: pointer;
+}
+.strip-thumb[aria-pressed="true"] { border-color: var(--primary); }
+.strip-thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.strip-num {
+  position: absolute; left: 3px; bottom: 3px;
+  background: rgba(17, 24, 39, 0.85); color: #fff;
+  font-size: 13px; font-weight: 700; padding: 0 6px; border-radius: 6px;
+}
+.strip-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
+/* Detail screens: photos one under another, each with Download */
+.gallery { display: flex; flex-direction: column; gap: 14px; }
+.gallery-item { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.gallery-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; color: var(--muted); }
+
 /* Keyboard open on a phone: make the photo short so the caption stays visible. */
 .kb-open .photo-frame { aspect-ratio: auto; width: 100%; height: 26vh; min-height: 120px; }
 .kb-open .photo-empty { flex-direction: row; }

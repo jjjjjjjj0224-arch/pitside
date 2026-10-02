@@ -1,11 +1,11 @@
 // Capture screen (new entry, or edit an existing one).
-// Top to bottom: photo, entry type, voice note, caption, match number,
+// Top to bottom: photos (up to 10), entry type, voice note, caption, match number,
 // design stage, and a Save button fixed to the bottom.
 
 import { getEntry, putEntry, requestPersistentStorage } from '../db.js';
 import { getSettings, saveSettings } from '../settings.js';
 import { go, goBack, getPreviousHash, canGoBack } from '../router.js';
-import { resizePhoto, makeThumbnail } from '../image.js';
+import { resizePhoto, makeThumbnail, photosOf, MAX_PHOTOS } from '../image.js';
 import { openDrawMode } from '../draw.js';
 import { createVoiceNote } from '../recorder.js';
 import { getTeam } from '../team.js';
@@ -31,8 +31,7 @@ export async function renderCapture(el, id) {
     ? {
       type: existing.type,
       stage: existing.stage || null,
-      photo: existing.photo || null,
-      drawing: existing.drawing || null,
+      photos: photosOf(existing).map((p) => ({ photo: p.photo, drawing: p.drawing || null })),
       caption: existing.caption || '',
       audio: existing.audio || null,
       audioMime: existing.audioMime || null,
@@ -42,8 +41,7 @@ export async function renderCapture(el, id) {
     : {
       type: settings.defaultType,
       stage: null,
-      photo: null,
-      drawing: null,
+      photos: [],            // [{ photo: Blob, drawing: Blob | null }]
       caption: '',
       audio: null,
       audioMime: null,
@@ -56,6 +54,8 @@ export async function renderCapture(el, id) {
   let photoBusy = null;       // Promise while a picked photo is being resized
   let drawSession = null;     // open draw mode, if any
   let lastSource = 'camera';  // which picker Retake should open
+  let pickMode = 'add';       // 'add' a photo, or 'replace' the selected one (Retake)
+  let current = 0;            // which photo is shown in the big frame
   const urls = new UrlBag();
 
   el.innerHTML = `
@@ -65,22 +65,36 @@ export async function renderCapture(el, id) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page capture">
-      <section class="photo-frame" aria-label="Photo">
-        <div class="photo-empty">
-          <button type="button" class="btn btn-light btn-lg" data-act="camera">Take photo</button>
-          <button type="button" class="btn btn-outline-light" data-act="gallery">Choose from gallery</button>
-        </div>
-        <div class="photo-filled" hidden>
-          <img class="layer layer-photo" alt="Entry photo">
-          <img class="layer layer-drawing" alt="" hidden>
-          <div class="photo-actions">
-            <button type="button" class="btn btn-overlay" data-act="draw">Draw</button>
-            <button type="button" class="btn btn-overlay" data-act="retake">Retake</button>
+      <section class="photo-section" aria-label="Photos">
+        <div class="photo-frame">
+          <div class="photo-empty">
+            <button type="button" class="btn btn-light btn-lg" data-act="camera">Take photo</button>
+            <button type="button" class="btn btn-outline-light" data-act="gallery">Choose from gallery</button>
           </div>
+          <div class="photo-filled" hidden>
+            <img class="layer layer-photo" alt="Entry photo">
+            <img class="layer layer-drawing" alt="" hidden>
+            <span class="photo-count" hidden></span>
+            <button type="button" class="btn btn-overlay photo-nav photo-prev" data-act="prev" hidden>‹ Prev</button>
+            <button type="button" class="btn btn-overlay photo-nav photo-next" data-act="next" hidden>Next ›</button>
+            <div class="photo-actions">
+              <button type="button" class="btn btn-overlay" data-act="draw">Draw</button>
+              <button type="button" class="btn btn-overlay" data-act="retake">Retake</button>
+              <button type="button" class="btn btn-overlay" data-act="remove-photo">Remove</button>
+            </div>
+          </div>
+          <p class="photo-busy" hidden>Loading photo…</p>
+          <input type="file" accept="image/*" capture="environment" data-input="camera" hidden>
+          <input type="file" accept="image/*" multiple data-input="gallery" hidden>
         </div>
-        <p class="photo-busy" hidden>Loading photo…</p>
-        <input type="file" accept="image/*" capture="environment" data-input="camera" hidden>
-        <input type="file" accept="image/*" data-input="gallery" hidden>
+        <div class="photo-strip" hidden>
+          <div class="strip-list" role="group" aria-label="Photos in this entry"></div>
+          <div class="strip-add">
+            <button type="button" class="btn btn-secondary" data-act="add-camera">+ Add photo</button>
+            <button type="button" class="btn btn-secondary" data-act="add-gallery">+ Add from gallery</button>
+          </div>
+          <p class="hint strip-full" hidden>That's the most photos for one entry (${MAX_PHOTOS}).</p>
+        </div>
       </section>
 
       <fieldset class="field">
@@ -144,6 +158,9 @@ export async function renderCapture(el, id) {
   const photoImg = $('.layer-photo');
   const drawingImg = $('.layer-drawing');
   const busyNote = $('.photo-busy');
+  const countLabel = $('.photo-count');
+  const strip = $('.photo-strip');
+  const stripList = $('.strip-list');
   const captionEl = $('#caption');
   const matchField = $('[data-match]');
   const matchEl = $('#match');
@@ -157,34 +174,79 @@ export async function renderCapture(el, id) {
     saveError.hidden = true;
   }
 
-  // ---- Photo ----
+  // ---- Photos (up to MAX_PHOTOS, each with its own drawing) ----
 
-  function showPhoto() {
+  // Big frame shows the selected photo; the strip below shows all of them.
+  function showPhotos() {
     urls.revokeAll();
-    const hasPhoto = Boolean(draft.photo);
-    emptyBox.hidden = hasPhoto;
-    filledBox.hidden = !hasPhoto;
-    if (hasPhoto) photoImg.src = urls.make(draft.photo);
-    drawingImg.hidden = !draft.drawing;
-    if (draft.drawing) drawingImg.src = urls.make(draft.drawing);
+    const list = draft.photos;
+    current = Math.min(current, Math.max(0, list.length - 1));
+    const has = list.length > 0;
+    emptyBox.hidden = has;
+    filledBox.hidden = !has;
+    strip.hidden = !has;
+    if (!has) return;
+
+    const p = list[current];
+    photoImg.src = urls.make(p.photo);
+    photoImg.alt = `Photo ${current + 1} of ${list.length}`;
+    drawingImg.hidden = !p.drawing;
+    if (p.drawing) drawingImg.src = urls.make(p.drawing);
+    countLabel.hidden = list.length < 2;
+    countLabel.textContent = `Photo ${current + 1} of ${list.length}`;
+    // Prev / Next arrows (only when there's more than one photo).
+    const prevBtn = $('[data-act="prev"]');
+    const nextBtn = $('[data-act="next"]');
+    prevBtn.hidden = nextBtn.hidden = list.length < 2;
+    prevBtn.disabled = current === 0;
+    nextBtn.disabled = current === list.length - 1;
+
+    stripList.innerHTML = list.map((item, i) => `
+      <button type="button" class="strip-thumb" data-index="${i}" aria-pressed="${i === current}"
+              aria-label="Photo ${i + 1}${item.drawing ? ', has a drawing' : ''}">
+        <img src="${urls.make(item.photo)}" alt="">
+        ${item.drawing ? `<img class="strip-drawing" src="${urls.make(item.drawing)}" alt="">` : ''}
+        <span class="strip-num">${i + 1}</span>
+      </button>`).join('');
+    const full = list.length >= MAX_PHOTOS;
+    $('.strip-add').hidden = full;
+    $('.strip-full').hidden = !full;
   }
 
-  function pick(source) {
+  // source: 'camera' or 'gallery'. mode: 'add' a new photo or 'replace' the selected one.
+  function pick(source, mode) {
     lastSource = source;
+    pickMode = mode;
     $(`[data-input="${source}"]`).click();
   }
 
   async function onPhotoPicked(input) {
-    const file = input.files && input.files[0];
+    const files = [...(input.files || [])];
     input.value = '';               // so picking the same photo again still works
-    if (!file) return;              // picker cancelled: nothing changes
+    if (!files.length) return;      // picker cancelled: nothing changes
+    const mode = pickMode;
+    const room = mode === 'replace' ? 1 : MAX_PHOTOS - draft.photos.length;
+    const chosen = files.slice(0, Math.max(0, room));
+    if (mode === 'add' && files.length > chosen.length) {
+      toast(`An entry can have up to ${MAX_PHOTOS} photos. Added ${chosen.length}.`);
+    }
+    if (!chosen.length) return;
+
     busyNote.hidden = false;
     photoBusy = (async () => {
       try {
-        draft.photo = await resizePhoto(file);
-        draft.drawing = null;       // an old drawing wouldn't match a new photo
-        markDirty();
-        showPhoto();
+        for (let i = 0; i < chosen.length; i++) {
+          busyNote.textContent = chosen.length > 1 ? `Loading photo ${i + 1} of ${chosen.length}…` : 'Loading photo…';
+          const photo = await resizePhoto(chosen[i]);
+          if (mode === 'replace' && draft.photos[current]) {
+            draft.photos[current] = { photo, drawing: null };   // an old drawing wouldn't match
+          } else {
+            draft.photos.push({ photo, drawing: null });
+            current = draft.photos.length - 1;
+          }
+          markDirty();
+          showPhotos();
+        }
       } catch (err) {
         console.error(err);
         toast("Couldn't open that photo. Try a different one.");
@@ -198,30 +260,77 @@ export async function renderCapture(el, id) {
 
   $('[data-input="camera"]').addEventListener('change', (e) => onPhotoPicked(e.target));
   $('[data-input="gallery"]').addEventListener('change', (e) => onPhotoPicked(e.target));
-  $('[data-act="camera"]').addEventListener('click', () => pick('camera'));
-  $('[data-act="gallery"]').addEventListener('click', () => pick('gallery'));
+  $('[data-act="camera"]').addEventListener('click', () => pick('camera', 'add'));
+  $('[data-act="gallery"]').addEventListener('click', () => pick('gallery', 'add'));
+  $('[data-act="add-camera"]').addEventListener('click', () => pick('camera', 'add'));
+  $('[data-act="add-gallery"]').addEventListener('click', () => pick('gallery', 'add'));
+
+  stripList.addEventListener('click', (e) => {
+    const thumb = e.target.closest('[data-index]');
+    if (!thumb) return;
+    current = Number(thumb.dataset.index);
+    showPhotos();
+  });
+
+  // Switch photos: arrows, or swipe left/right on the photo.
+  function showPhotoAt(index) {
+    if (index < 0 || index >= draft.photos.length || index === current) return;
+    current = index;
+    showPhotos();
+  }
+  $('[data-act="prev"]').addEventListener('click', () => showPhotoAt(current - 1));
+  $('[data-act="next"]').addEventListener('click', () => showPhotoAt(current + 1));
+  let swipeStart = null;
+  filledBox.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    swipeStart = { x: e.clientX, y: e.clientY };
+  });
+  filledBox.addEventListener('pointerup', (e) => {
+    if (!swipeStart) return;
+    const dx = e.clientX - swipeStart.x;
+    const dy = e.clientY - swipeStart.y;
+    swipeStart = null;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) showPhotoAt(current + (dx < 0 ? 1 : -1));
+  });
+  filledBox.addEventListener('pointercancel', () => { swipeStart = null; });
 
   $('[data-act="retake"]').addEventListener('click', async () => {
-    if (draft.drawing) {
+    if (draft.photos[current] && draft.photos[current].drawing) {
       const ok = await confirmDialog({
         title: 'Replace this photo?',
-        message: 'Your drawing will be removed if you pick a new photo.',
+        message: 'Its drawing will be removed if you pick a new photo.',
         confirmText: 'Replace',
       });
       if (!ok) return;
     }
-    pick(lastSource);
+    pick(lastSource, 'replace');
+  });
+
+  $('[data-act="remove-photo"]').addEventListener('click', async () => {
+    const p = draft.photos[current];
+    if (!p) return;
+    const ok = await confirmDialog({
+      title: draft.photos.length > 1 ? `Remove photo ${current + 1}?` : 'Remove this photo?',
+      message: p.drawing ? 'Its drawing will be removed too.' : '',
+      confirmText: 'Remove',
+      danger: true,
+    });
+    if (!ok) return;
+    draft.photos.splice(current, 1);
+    markDirty();
+    showPhotos();
   });
 
   $('[data-act="draw"]').addEventListener('click', async () => {
-    if (!draft.photo) return;
-    drawSession = openDrawMode(draft.photo, draft.drawing);
+    const p = draft.photos[current];
+    if (!p) return;
+    drawSession = openDrawMode(p.photo, p.drawing);
     const result = await drawSession.done;
     drawSession = null;
-    if (result !== draft.drawing) {
-      draft.drawing = result;
+    if (result !== p.drawing) {
+      p.drawing = result;
       markDirty();
-      showPhoto();
+      showPhotos();
     }
     $('[data-act="draw"]').focus();
   });
@@ -327,7 +436,7 @@ export async function renderCapture(el, id) {
     draft.caption = captionEl.value;
     draft.matchNumber = matchEl.value;
 
-    if (!draft.photo && !draft.caption.trim()) {
+    if (!draft.photos.length && !draft.caption.trim()) {
       showSaveError('Add a photo or a caption to save.');
       return;
     }
@@ -338,12 +447,12 @@ export async function renderCapture(el, id) {
     saveError.hidden = true;
     try {
       const now = new Date().toISOString();
+      const first = draft.photos[0] || { photo: null, drawing: null };
       const entry = {
         id: existing ? existing.id : uuid(),
         type: draft.type,
         stage: draft.stage || null,
-        photo: draft.photo,
-        drawing: draft.photo ? draft.drawing : null,
+        photos: draft.photos.map((p) => ({ photo: p.photo, drawing: p.drawing || null })),
         caption: draft.caption.trim(),
         audio: draft.audio,
         audioMime: draft.audio ? draft.audioMime : null,
@@ -351,7 +460,7 @@ export async function renderCapture(el, id) {
         author: existing ? existing.author : settings.author,   // added automatically
         createdAt: existing ? existing.createdAt : now,          // added automatically
         updatedAt: now,
-        thumb: await makeThumbnail(draft.photo, draft.drawing),  // small picture for the Home list
+        thumb: await makeThumbnail(first.photo, first.drawing),  // first photo, for the Home list
       };
       // Team sharing: saved on the phone first, uploaded later by sync.js.
       // (Read the latest upload info, in case a sync finished while editing.)
@@ -397,7 +506,7 @@ export async function renderCapture(el, id) {
 
   // ---- First draw ----
 
-  showPhoto();
+  showPhotos();
   showType();
   showStage(Boolean(draft.stage));
 
@@ -413,7 +522,7 @@ export async function renderCapture(el, id) {
       if (saving) return false;
       return confirmDialog({
         title: existing ? 'Discard your changes?' : 'Discard this entry?',
-        message: existing ? 'Your changes to this entry will be lost.' : 'The photo, voice note and caption will be lost.',
+        message: existing ? 'Your changes to this entry will be lost.' : 'The photos, voice note and caption will be lost.',
         confirmText: 'Discard',
         cancelText: 'Keep editing',
         danger: true,

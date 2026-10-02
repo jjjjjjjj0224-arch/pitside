@@ -5,6 +5,7 @@ import { getSettings } from '../settings.js';
 import { isCloudConfigured } from '../cloud.js';
 import { getTeam } from '../team.js';
 import { getSyncStatus, syncSoon } from '../sync.js';
+import { photosOf } from '../image.js';
 import { TYPES, TYPE_LABELS, STAGE_LABELS, esc, formatDateTime, typeBadge, UrlBag } from '../ui.js';
 
 // Remember the chosen filter and view while the app is open.
@@ -133,8 +134,11 @@ export async function renderHome(el) {
 // One row in the list: thumbnail, type, first line of caption, date, mic marker.
 function entryCard(entry, settings, urls, { team, thumb, inTeam }) {
   const firstLine = (entry.caption || '').split('\n').find((l) => l.trim()) || '';
-  const thumbBlob = thumb || (!team && entry.photo);
-  const hasPhoto = team ? Boolean(entry.paths && entry.paths.photo) : Boolean(entry.photo);
+  // (Team copies saved by an older version have paths.photo instead of paths.photos until the next sync.)
+  const teamPhotoCount = (p) => (p.photos ? p.photos.length : Number(Boolean(p.photo)));
+  const photoCount = team ? teamPhotoCount(entry.paths || {}) : photosOf(entry).length;
+  const thumbBlob = thumb || (!team && photoCount ? photosOf(entry)[0].photo : null);
+  const hasPhoto = photoCount > 0;
   const thumbHtml = thumbBlob
     ? `<img src="${urls.make(thumbBlob)}" alt="" loading="lazy" decoding="async">`
     : `<span class="thumb-none">${hasPhoto ? 'Photo' : 'No photo'}</span>`;
@@ -157,6 +161,7 @@ function entryCard(entry, settings, urls, { team, thumb, inTeam }) {
             ${typeBadge(entry.type, accent)}
             ${entry.stage ? `<span class="stage-tag">${esc(STAGE_LABELS[entry.stage])}</span>` : ''}
             ${entry.matchNumber ? `<span class="stage-tag">Match ${esc(entry.matchNumber)}</span>` : ''}
+            ${photoCount > 1 ? `<span class="stage-tag">${photoCount} photos</span>` : ''}
             ${shareTag}
           </div>
           <p class="caption-preview ${firstLine ? '' : 'muted'}">${firstLine ? esc(firstLine) : 'No caption'}</p>

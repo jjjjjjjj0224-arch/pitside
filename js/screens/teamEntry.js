@@ -1,15 +1,15 @@
-// A teammate's shared entry: photo + drawing, voice note, caption and details.
-// Full files download the first time it's opened, then stay on the phone.
-// The author and the team owner can remove it from the team.
+// A teammate's shared entry: photos (each with drawing and a Download button),
+// voice note, caption and details. Full files download the first time it's
+// opened, then stay on the phone. The author and the team owner can remove it.
 
 import { getTeamEntry, getEntry, deleteTeamEntry } from '../db.js';
 import { getSettings } from '../settings.js';
 import { go, goBack } from '../router.js';
 import { getTeam } from '../team.js';
 import { table, files, friendlyError } from '../cloud.js';
-import { loadTeamFiles } from '../sync.js';
-import { renderEntryImage } from '../render.js';
-import { baseName, audioFileName, shareOrDownload } from '../exporter.js';
+import { loadTeamFiles, upgradeTeamRecord, teamEntryPaths } from '../sync.js';
+import { galleryHtml, mountGallery } from '../gallery.js';
+import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
 
 export async function renderTeamEntry(el, id) {
@@ -18,18 +18,21 @@ export async function renderTeamEntry(el, id) {
     go(`#/entry/${encodeURIComponent(id)}`, { replace: true });
     return {};
   }
-  let rec = await getTeamEntry(id);
+  const found = await getTeamEntry(id);
   const team = getTeam();
-  if (!rec || !team) {
+  if (!found || !team) {
     el.innerHTML = `
       <header class="topbar"><a class="btn btn-ghost" href="#/home">Home</a><h1>Team entry</h1><span class="topbar-spacer"></span></header>
       <main class="page"><p>This entry is no longer shared with your team.</p></main>`;
     return {};
   }
 
+  let rec = upgradeTeamRecord(found);
   const urls = new UrlBag();
   const settings = getSettings();
   const canRemove = rec.userId === team.userId || team.role === 'owner';
+  const photoCount = rec.paths.photos.length;
+  const base = baseName(rec);
   let player = null;
 
   el.innerHTML = `
@@ -39,12 +42,7 @@ export async function renderTeamEntry(el, id) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page detail">
-      ${rec.paths.photo ? `
-        <div class="photo-frame detail-photo">
-          <img class="layer" data-layer="photo" alt="Entry photo">
-          <img class="layer" data-layer="drawing" alt="Drawing on the photo" hidden>
-          <p class="photo-busy" hidden>Downloading photo…</p>
-        </div>` : ''}
+      ${galleryHtml(photoCount)}
 
       <div class="detail-tags">
         ${typeBadge(rec.type, settings.export[rec.type].accent)}
@@ -76,25 +74,9 @@ export async function renderTeamEntry(el, id) {
   const $ = (s) => el.querySelector(s);
   const showError = (msg) => { const b = $('.form-error'); b.textContent = msg; b.hidden = !msg; };
 
-  // Photo: show the small thumbnail at once, then the full photo + drawing.
-  const photoImg = $('[data-layer="photo"]');
-  const drawingImg = $('[data-layer="drawing"]');
-  if (photoImg) {
-    if (rec.thumb) photoImg.src = urls.make(rec.thumb);
-    const busy = $('.photo-busy');
-    busy.hidden = Boolean(rec.photo);
-    loadTeamFiles(rec, ['photo', 'drawing'])
-      .then((r) => {
-        rec = r;
-        photoImg.src = urls.make(rec.photo);
-        if (rec.drawing) { drawingImg.src = urls.make(rec.drawing); drawingImg.hidden = false; }
-      })
-      .catch((err) => {
-        console.warn(err);
-        showError(navigator.onLine ? friendlyError(err) : 'Connect to the internet to see the full photo.');
-      })
-      .finally(() => { busy.hidden = true; });
-  }
+  // Photos: the small thumbnail shows at once, then the full photos download.
+  const photosLoaded = loadTeamFiles(rec, { photos: true }).then((r) => { rec = r; return r.photos; });
+  mountGallery(el, { count: photoCount, loadPhotos: () => photosLoaded, base, urls, thumb: rec.thumb });
 
   // Voice note (downloads on first Play).
   const playBtn = $('[data-act="play"]');
@@ -108,7 +90,7 @@ export async function renderTeamEntry(el, id) {
       if (player) { stopPlayback(); return; }
       try {
         playBtn.textContent = 'Loading…';
-        rec = await loadTeamFiles(rec, ['audio']);
+        rec = await loadTeamFiles(rec, { audio: true });
         player = new Audio(urls.make(rec.audio));
         player.addEventListener('ended', stopPlayback);
         await player.play();
@@ -121,18 +103,17 @@ export async function renderTeamEntry(el, id) {
     });
   }
 
-  // Share the export image (same as for my own entries).
+  // Share the slide images (one per photo), same as for my own entries.
   $('[data-act="share"]').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     try {
       btn.disabled = true;
-      rec = await loadTeamFiles(rec, ['photo', 'drawing']);
-      const base = baseName(rec);
-      const png = await renderEntryImage({ ...rec, audio: rec.paths.audio ? new Blob([]) : null },
-        settings.export[rec.type], rec.paths.audio ? audioFileName({ audio: true, audioMime: rec.audioMime }, base) : null);
-      const result = await shareOrDownload(new File([png], `${base}.png`, { type: 'image/png' }), 'PitSide entry');
-      if (result === 'downloaded') toast('Image downloaded');
-      if (result === 'retry') toast('Image ready. Tap Share again.');
+      await photosLoaded;
+      const forImages = { ...rec, audio: rec.paths.audio ? new Blob([]) : null };   // only the file name is needed
+      const images = await renderEntryImages(forImages, settings, base);
+      const result = await shareOrDownload(images, 'PitSide entry');
+      if (result === 'downloaded') toast(images.length > 1 ? `${images.length} images downloaded` : 'Image downloaded');
+      if (result === 'retry') toast('Images ready. Tap Share again.');
     } catch (err) {
       console.warn(err);
       toast(navigator.onLine ? 'Could not make the image.' : 'Connect to the internet to download this entry first.');
@@ -152,7 +133,7 @@ export async function renderTeamEntry(el, id) {
       });
       if (!ok) return;
       try {
-        await files.remove(Object.values(rec.paths));   // files first, so nothing is left behind
+        await files.remove(teamEntryPaths(rec));   // files first, so nothing is left behind
         await table.remove('entries', `id=eq.${rec.id}`);
         await deleteTeamEntry(rec.id);
         toast('Removed from team');

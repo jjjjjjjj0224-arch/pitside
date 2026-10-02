@@ -1,11 +1,12 @@
-// Entry detail: photo with drawing, voice note, full caption and info.
-// Buttons: Edit, Share (exported image), Delete.
+// Entry detail: photos (each with drawing and a Download button), voice note,
+// full caption and info. Buttons: Edit, Share (slide images), Delete.
 
 import { getEntry, deleteEntry } from '../db.js';
 import { getSettings } from '../settings.js';
 import { goBack } from '../router.js';
-import { renderEntryImage } from '../render.js';
-import { baseName, audioFileName, shareOrDownload } from '../exporter.js';
+import { photosOf } from '../image.js';
+import { galleryHtml, mountGallery } from '../gallery.js';
+import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
 import { getTeam } from '../team.js';
 import { queueRemoteDelete } from '../sync.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
@@ -32,6 +33,8 @@ export async function renderDetail(el, id) {
   const accent = settings.export[entry.type].accent;
   const team = getTeam();
   const edited = entry.updatedAt && entry.updatedAt.slice(0, 16) !== entry.createdAt.slice(0, 16);
+  const photos = photosOf(entry);
+  const base = baseName(entry);
 
   el.innerHTML = `
     <header class="topbar">
@@ -40,11 +43,7 @@ export async function renderDetail(el, id) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page detail">
-      ${entry.photo ? `
-        <div class="photo-frame detail-photo">
-          <img class="layer" src="${urls.make(entry.photo)}" alt="Entry photo">
-          ${entry.drawing ? `<img class="layer" src="${urls.make(entry.drawing)}" alt="Drawing on the photo">` : ''}
-        </div>` : ''}
+      ${galleryHtml(photos.length)}
 
       <div class="detail-tags">
         ${typeBadge(entry.type, accent)}
@@ -74,28 +73,29 @@ export async function renderDetail(el, id) {
       </div>
     </main>`;
 
-  // Make the share image now, so it is ready the moment Share is tapped
-  // (the share sheet must open right after a tap).
-  const base = baseName(entry);
-  const imagePromise = renderEntryImage(entry, settings.export[entry.type], audioFileName(entry, base))
-    .then((png) => new File([png], `${base}.png`, { type: 'image/png' }));
-  imagePromise.catch((err) => console.error('Could not make share image', err));
+  // Photos with Download buttons.
+  mountGallery(el, { count: photos.length, loadPhotos: async () => photos, base, urls });
+
+  // Make the slide images now (one per photo), so they're ready the moment
+  // Share is tapped (the share sheet must open right after a tap).
+  const imagesPromise = renderEntryImages(entry, settings, base);
+  imagesPromise.catch((err) => console.error('Could not make share images', err));
 
   el.querySelector('[data-act="back"]').addEventListener('click', () => goBack('#/home'));
 
   el.querySelector('[data-act="share"]').addEventListener('click', async (e) => {
     const btn = e.currentTarget;
-    let file;
+    let images;
     try {
-      file = await imagePromise;
+      images = await imagesPromise;
     } catch {
       toast('Could not make the image.');
       return;
     }
     btn.disabled = true;
-    const result = await shareOrDownload(file, 'PitSide entry');
+    const result = await shareOrDownload(images, 'PitSide entry');
     btn.disabled = false;
-    if (result === 'downloaded') toast('Image downloaded');
+    if (result === 'downloaded') toast(images.length > 1 ? `${images.length} images downloaded` : 'Image downloaded');
     if (result === 'retry') toast('Image ready. Tap Share again.');
   });
 
@@ -104,7 +104,7 @@ export async function renderDetail(el, id) {
       title: 'Delete this entry?',
       message: entry.remote
         ? 'It will be removed from this phone and from your team. This can\'t be undone.'
-        : 'The photo, drawing, voice note and caption will be removed from this phone. This can\'t be undone.',
+        : 'The photos, drawings, voice note and caption will be removed from this phone. This can\'t be undone.',
       confirmText: 'Delete',
       danger: true,
     });

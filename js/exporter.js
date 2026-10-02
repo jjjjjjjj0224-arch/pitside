@@ -3,6 +3,7 @@
 
 import { renderEntryImage } from './render.js';
 import { makeZip } from './zip.js';
+import { photosOf, flattenPhoto } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -25,6 +26,27 @@ export function audioExtension(mime) {
 
 export function audioFileName(entry, base = baseName(entry)) {
   return entry.audio ? `${base}.${audioExtension(entry.audioMime || entry.audio.type)}` : null;
+}
+
+// Image file names for an entry: one per photo.
+//   1 photo (or none):  2026-10-01_1542_build.png
+//   3 photos:           2026-10-01_1542_build_photo1.png, ..._photo2.png, ..._photo3.png
+export function imageFileNames(entry, base = baseName(entry)) {
+  const n = photosOf(entry).length;
+  if (n <= 1) return [`${base}.png`];
+  return Array.from({ length: n }, (_, i) => `${base}_photo${i + 1}.png`);
+}
+
+// Make all of an entry's export images (one per photo) as PNG files.
+export async function renderEntryImages(entry, settings, base = baseName(entry)) {
+  const names = imageFileNames(entry, base);
+  const audioName = audioFileName(entry, base);
+  const images = [];
+  for (let i = 0; i < names.length; i++) {
+    const png = await renderEntryImage(entry, settings.export[entry.type], audioName, i);
+    images.push(new File([png], names[i], { type: 'image/png' }));
+  }
+  return images;
 }
 
 // Give every entry a unique base name. Two entries of the same type in the
@@ -52,8 +74,8 @@ function csvDate(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function buildCsv(entries, names) {
-  const header = ['date', 'author', 'type', 'stage', 'match_number', 'caption', 'image_file', 'audio_file'];
+function buildCsv(entries, names, includePhotos) {
+  const header = ['date', 'author', 'type', 'stage', 'match_number', 'caption', 'image_file', 'audio_file', 'photo_files'];
   const rows = entries.map((e) => {
     const base = names.get(e.id);
     return [
@@ -63,17 +85,19 @@ function buildCsv(entries, names) {
       e.stage ? STAGE_LABELS[e.stage] : '',
       e.matchNumber || '',
       e.caption || '',
-      `${base}.png`,
+      imageFileNames(e, base).join('; '),
       audioFileName(e, base) || '',
+      includePhotos ? photosOf(e).map((_, i, all) => `photos/${photoFileName(base, i, all.length)}`).join('; ') : '',
     ].map(csvCell).join(',');
   });
   // The "﻿" at the start helps Excel / Google Sheets read emoji and accents.
   return `﻿${[header.join(','), ...rows].join('\r\n')}\r\n`;
 }
 
-// Build the export ZIP: one PNG per entry, each voice note, and entries.csv.
-// onProgress(done, total) is called as each image is made.
-export async function buildExportZip(entries, settings, onProgress = () => {}) {
+// Build the export ZIP: one PNG per photo of each entry, each voice note, entries.csv,
+// and (includePhotos) a photos/ folder with the full-size photos for the notebook.
+// onProgress(done, total) is called as each entry's images are made.
+export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true } = {}) {
   const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
@@ -81,23 +105,35 @@ export async function buildExportZip(entries, settings, onProgress = () => {}) {
     const e = sorted[i];
     const base = names.get(e.id);
     const audioName = audioFileName(e, base);
-    const png = await renderEntryImage(e, settings.export[e.type], audioName);
-    files.push({ name: `${base}.png`, data: png, date: new Date(e.createdAt) });
+    for (const image of await renderEntryImages(e, settings, base)) {
+      files.push({ name: image.name, data: image, date: new Date(e.createdAt) });
+    }
     if (e.audio) files.push({ name: audioName, data: e.audio, date: new Date(e.createdAt) });
+    if (includePhotos) {
+      const list = photosOf(e);
+      for (let p = 0; p < list.length; p++) {
+        files.push({ name: `photos/${photoFileName(base, p, list.length)}`, data: await flattenPhoto(list[p]), date: new Date(e.createdAt) });
+      }
+    }
     onProgress(i + 1, sorted.length);
   }
-  files.push({ name: 'entries.csv', data: buildCsv(sorted, names), date: new Date() });
+  files.push({ name: 'entries.csv', data: buildCsv(sorted, names, includePhotos), date: new Date() });
   return makeZip(files);
 }
 
-// Can this phone share this file through the share sheet?
-export function canShareFile(file) {
+// Can this phone share this file (or list of files) through the share sheet?
+export function canShareFile(fileOrFiles) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
   try {
-    return Boolean(navigator.canShare && navigator.share && navigator.canShare({ files: [file] }));
+    return Boolean(navigator.canShare && navigator.share && navigator.canShare({ files }));
   } catch {
     return false;
   }
 }
+
+// Only use the share sheet on phones/tablets. On a laptop, "download" should
+// just save the file (the desktop share sheet doesn't offer "Save").
+const isTouchDevice = () => window.matchMedia('(pointer: coarse)').matches;
 
 // Save a file to the device's Downloads.
 export function downloadBlob(blob, fileName) {
@@ -112,11 +148,14 @@ export function downloadBlob(blob, fileName) {
 }
 
 // Open the share sheet (Slides, Drive, chat apps…) or download if sharing
-// files isn't supported. Returns 'shared', 'cancelled', 'downloaded' or 'retry'.
-export async function shareOrDownload(file, title) {
-  if (canShareFile(file)) {
+// files isn't supported. file can be one File or a list of Files.
+// Returns 'shared', 'cancelled', 'downloaded' or 'retry'.
+export async function shareOrDownload(fileOrFiles, title, { preferDownload = false } = {}) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  const useShare = canShareFile(files) && !(preferDownload && !isTouchDevice());
+  if (useShare) {
     try {
-      await navigator.share({ files: [file], title });
+      await navigator.share({ files, title });
       return 'shared';
     } catch (err) {
       if (err.name === 'AbortError') return 'cancelled';
@@ -126,6 +165,25 @@ export async function shareOrDownload(file, title) {
       console.warn('Share failed, downloading instead', err);
     }
   }
-  downloadBlob(file, file.name);
+  // Several downloads in a row: a short pause between them so the browser allows each one.
+  for (let i = 0; i < files.length; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 400));
+    downloadBlob(files[i], files[i].name);
+  }
   return 'downloaded';
+}
+
+// Download photos for the notebook (full size, with the drawing on top if there is one).
+// On a phone this opens the share sheet, where "Save Image" puts them in the camera roll.
+export async function downloadPhotos(photoList, base, title = 'PitSide photos') {
+  const files = [];
+  for (let i = 0; i < photoList.length; i++) {
+    files.push(new File([await flattenPhoto(photoList[i])], photoFileName(base, i, photoList.length), { type: 'image/jpeg' }));
+  }
+  return shareOrDownload(files, title, { preferDownload: true });
+}
+
+// "2026-10-01_1542_build_photo2.jpg" (or without the number if there's one photo)
+export function photoFileName(base, index, count) {
+  return count > 1 ? `${base}_photo${index + 1}.jpg` : `${base}_photo.jpg`;
 }

@@ -191,6 +191,9 @@ export function friendlyError(err) {
   if (/anonymous_provider_disabled|Anonymous sign-ins are disabled/i.test(text)) {
     return 'Team sign-in is switched off. In Supabase, turn on "Allow anonymous sign-ins".';
   }
+  if (/'photos' column|column .*photos/i.test(text)) {
+    return 'The team database needs a quick update: in Supabase, run supabase/schema.sql again.';
+  }
   if (err.status === 429) return 'Too many sign-ins from this network. Try again in a while.';
   if (/session_expired|not_signed_in/.test(text)) return 'Your team sign-in ended. Join the team again with its code.';
   if (err.status === 401 || err.status === 403) return 'Not allowed. You may have been removed from the team.';

@@ -52,6 +52,14 @@ create table if not exists public.entries (
 );
 create index if not exists entries_team_created on public.entries (team_id, created_at desc);
 
+-- v1.2: several photos per entry (up to 10), each with its own drawing:
+--   [{ "photo": "<path>", "drawing": "<path>" or null }, ...]
+-- photo_path / drawing_path above still hold the first photo, for older app versions.
+alter table public.entries add column if not exists photos jsonb not null default '[]'::jsonb;
+alter table public.entries drop constraint if exists entries_photos_max;
+alter table public.entries add constraint entries_photos_max
+  check (jsonb_typeof(photos) = 'array' and jsonb_array_length(photos) <= 10);
+
 -- Wrong join codes, to slow down anyone guessing codes.
 create table if not exists public.join_attempts (
   id      bigint generated always as identity primary key,

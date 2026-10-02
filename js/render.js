@@ -5,8 +5,11 @@
 //
 // Which text is printed, the size and the label color come from that entry
 // type's export options in Settings.
+//
+// An entry with several photos makes one image per photo (photoIndex picks which),
+// each marked "Photo 2 of 3".
 
-import { loadImage, canvasToBlob, fitContain } from './image.js';
+import { loadImage, canvasToBlob, fitContain, photosOf } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
@@ -17,7 +20,7 @@ const TEXT_LIGHT = '#4B5563';
 
 // options: settings.export[entry.type] = { size, fields, accent }
 // audioFileName: name of the voice note file in the export (if any)
-export async function renderEntryImage(entry, options, audioFileName) {
+export async function renderEntryImage(entry, options, audioFileName, photoIndex = 0) {
   const W = options.size === 'square' ? 1080 : 1920;
   const H = 1080;
   const canvas = document.createElement('canvas');
@@ -29,9 +32,11 @@ export async function renderEntryImage(entry, options, audioFileName) {
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, W, H);
 
-  const photo = entry.photo ? await loadImage(entry.photo) : null;
-  const drawing = entry.photo && entry.drawing ? await loadImage(entry.drawing) : null;
-  const blocks = textBlocks(entry, options, audioFileName);
+  const photos = photosOf(entry);
+  const chosen = photos[photoIndex] || null;
+  const photo = chosen ? await loadImage(chosen.photo) : null;
+  const drawing = chosen && chosen.drawing ? await loadImage(chosen.drawing) : null;
+  const blocks = textBlocks(entry, options, audioFileName, photos.length > 1 ? `Photo ${photoIndex + 1} of ${photos.length}` : null);
 
   if (!photo) {
     // Caption-only entry: text uses the whole image.
@@ -69,10 +74,11 @@ function drawPhoto(ctx, photo, drawing, box) {
 }
 
 // The pieces of text to print, in order, based on the type's settings.
-function textBlocks(entry, options, audioFileName) {
+function textBlocks(entry, options, audioFileName, photoLabel) {
   const f = options.fields;
   const blocks = [{ kind: 'label', text: (TYPE_LABELS[entry.type] || entry.type).toUpperCase() }];
   const meta = [];
+  if (photoLabel) meta.push(photoLabel);   // "Photo 2 of 3"
   if (f.datetime) meta.push(longDateTime(entry.createdAt));
   if (f.author && entry.author) meta.push(`Author: ${entry.author}`);
   if (f.stage && entry.stage) meta.push(`Stage: ${STAGE_LABELS[entry.stage] || entry.stage}`);

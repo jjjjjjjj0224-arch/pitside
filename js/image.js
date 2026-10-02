@@ -1,6 +1,14 @@
 // Photo helpers: load, resize and make thumbnails using a <canvas>.
 
 export const MAX_PHOTO_SIDE = 1600;   // longest side of a saved photo, in pixels
+export const MAX_PHOTOS = 10;         // photos per entry
+
+// An entry's photos as a list of { photo, drawing } (each drawing belongs to its photo).
+// Entries saved before multiple photos have single `photo` and `drawing` fields instead.
+export function photosOf(entry) {
+  if (Array.isArray(entry.photos)) return entry.photos;
+  return entry.photo ? [{ photo: entry.photo, drawing: entry.drawing || null }] : [];
+}
 const JPEG_QUALITY = 0.8;
 const THUMB_SIZE = 320;
 
@@ -60,6 +68,21 @@ export async function makeThumbnail(photoBlob, drawingBlob) {
   ctx.drawImage(photo, dx, dy, dw, dh);
   if (drawing) ctx.drawImage(drawing, dx, dy, dw, dh);
   return canvasToBlob(canvas, 'image/jpeg', 0.75);
+}
+
+// A full-size copy of a photo for downloading: the drawing (if any) is merged on top.
+// The saved photo itself is never changed. { photo, drawing } -> JPEG Blob
+export async function flattenPhoto({ photo, drawing }) {
+  if (!drawing) return photo;
+  const img = await loadImage(photo);
+  const over = await loadImage(drawing);
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  ctx.drawImage(over, 0, 0, canvas.width, canvas.height);
+  return canvasToBlob(canvas, 'image/jpeg', 0.9);
 }
 
 // Work out where to draw a w x h image so it fits inside a box ("contain").
