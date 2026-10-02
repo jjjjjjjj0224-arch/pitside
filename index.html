@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PitSide</title>
+  <meta name="description" content="Save quick photo + note evidence for your VEX engineering notebook.">
+  <meta name="theme-color" content="#14213D">
+  <meta name="color-scheme" content="light">
+
+  <!-- PWA: manifest for Android/desktop, apple-* tags for iPhone home screen -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PitSide">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <!-- Shown only when the device has no connection (see app.js) -->
+  <div id="offline-note" class="offline-note" role="status" hidden>Offline, saving to this phone</div>
+
+  <!-- Each screen renders itself into #app -->
+  <div id="app" class="app">
+    <p class="loading">Loading PitSide…</p>
+  </div>
+
+  <!-- Short messages like "Changes saved" -->
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <noscript><p class="loading">PitSide needs JavaScript turned on.</p></noscript>
+</body>
+</html>
