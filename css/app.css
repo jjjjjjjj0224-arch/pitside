@@ -538,6 +538,17 @@ h1:focus { outline: none; }
 .switch:checked::after { transform: translateX(24px); }
 .switch:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
+/* "New version ready" bar */
+.update-bar {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 70;
+  top: calc(8px + env(safe-area-inset-top)); width: min(calc(100% - 24px), 520px);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 8px 8px 14px; border-radius: var(--radius);
+  background: var(--surface); color: var(--text); border: 2px solid var(--primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); font-weight: 600;
+}
+.update-bar span { flex: 1; min-width: 140px; }
+
 /* Theme picker (Settings) */
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; }
 .theme-btn {

@@ -84,8 +84,41 @@ async function start() {
 
   // Register the service worker that caches the app for offline use.
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch((err) => console.warn('Service worker failed', err));
+    // Was an older version already in charge? Then a change of service worker means an update.
+    const hadOldVersion = Boolean(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadOldVersion) showUpdateBar();
+    });
+    navigator.serviceWorker.register('./sw.js')
+      .then((reg) => {
+        // Look for a new version whenever the app is opened or comes back to the front
+        // (phones often just resume the app instead of starting it again).
+        const check = () => { if (navigator.onLine) reg.update().catch(() => {}); };
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+        setInterval(check, 60 * 60 * 1000);
+      })
+      .catch((err) => console.warn('Service worker failed', err));
   }
+}
+
+// "New version ready" bar. Reloading is the user's choice, so nothing being typed is lost.
+function showUpdateBar() {
+  if (document.getElementById('update-bar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'update-bar';
+  bar.className = 'update-bar';
+  bar.setAttribute('role', 'status');
+  bar.innerHTML = `
+    <span>New version of PitSide ready.</span>
+    <button type="button" class="btn btn-primary btn-small" data-act="reload">Reload</button>
+    <button type="button" class="btn btn-ghost btn-small" data-act="later">Later</button>`;
+  bar.addEventListener('click', (e) => {
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'reload') location.reload();
+    else bar.remove();
+  });
+  document.body.appendChild(bar);
 }
 
 start();
