@@ -73,15 +73,17 @@ export async function makeThumbnail(photoBlob, drawingBlob) {
 // A full-size copy of a photo for downloading: the drawing (if any) is merged on top.
 // The saved photo itself is never changed. { photo, drawing } -> JPEG Blob
 export async function flattenPhoto({ photo, drawing }) {
-  if (!drawing) return photo;
+  // Downloads are always JPEG (works everywhere); teammates' photos arrive as WebP.
+  if (!drawing && photo.type === 'image/jpeg') return photo;
   const img = await loadImage(photo);
-  const over = await loadImage(drawing);
   const canvas = document.createElement('canvas');
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
   const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0);
-  ctx.drawImage(over, 0, 0, canvas.width, canvas.height);
+  if (drawing) ctx.drawImage(await loadImage(drawing), 0, 0, canvas.width, canvas.height);
   return canvasToBlob(canvas, 'image/jpeg', 0.9);
 }
 

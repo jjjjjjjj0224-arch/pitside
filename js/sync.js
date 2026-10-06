@@ -1,31 +1,34 @@
-// Keeps the phone and the team in step. Saving NEVER waits for the internet:
+// Keeps the phone and your teams in step. Saving NEVER waits for the internet:
 // entries are saved on the phone first and marked "pending", then this file
-// uploads them whenever there is a connection.
+// uploads them whenever there is a connection (and you're signed in).
 //
 // One sync run:
-//   1. check we're still in the team
-//   2. delete entries from the team that were deleted on the phone
-//   3. upload shared entries that are new or changed (files first, then the row)
-//   4. remove entries whose "Share with team" was switched off
-//   5. download the team's entry list (+ small thumbnails) for the Team view
+//   1. ask the server which teams I'm in
+//   2. delete entries from teams that were deleted on the phone
+//   3. per entry: remove it from a team it's no longer shared with, then upload
+//      it to the team it's shared with if new or changed (files first, then the row).
+//      Pictures are uploaded as WebP, at most 3 MB each (see webp.js).
+//   4. download each team's entry list (+ small thumbnails) for the Team view
 //
 // Each entry on the phone has:
-//   shared: true / false / undefined (saved before joining a team = not shared)
-//   sync:   'pending' (needs uploading/removing) or 'synced'
-//   remote: where its files are in the team storage, or null
+//   shareTeam: a team id = shared with that team; null = only on this phone;
+//              undefined = saved before joining any team (not shared)
+//   sync:      'pending' (needs uploading/removing) or 'synced'
+//   remote:    { teamId, thumb, audio, photos: [{ photo, drawing }] } = where its
+//              files are online, or null
 
 import {
   getAllEntries, getEntry, putEntry, readKey, writeKey,
   getAllTeamEntries, putTeamEntry, deleteTeamEntry,
 } from './db.js';
-import { isCloudConfigured, table, files, friendlyError } from './cloud.js';
-import { getTeam, refreshTeam } from './team.js';
+import { isCloudConfigured, getAccount, table, files, friendlyError } from './cloud.js';
+import { getTeams, refreshTeams } from './team.js';
 import { audioExtension } from './exporter.js';
 import { photosOf } from './image.js';
+import { toWebp } from './webp.js';
 
 // Every online file path of an entry (photos, drawings, thumbnail, voice note).
-// remote = { teamId, thumb, audio, photos: [{ photo, drawing }] }
-// (Entries uploaded before multiple photos have single photo/drawing paths instead.)
+// (Entries uploaded before multiple photos have single photo/drawing paths.)
 function remotePaths(remote) {
   if (!remote) return [];
   return [
@@ -48,20 +51,22 @@ function setStatus(changes) {
   window.dispatchEvent(new CustomEvent('pitside-sync', { detail: status }));
 }
 
-// Does this entry need uploading to (or removing from) the team?
-function needsUpload(e, team) {
-  return e.shared === true && (e.sync !== 'synced' || !e.remote || e.remote.teamId !== team.teamId);
+// Is it shared with one of my teams, and not uploaded there yet (or changed)?
+function needsUpload(e, myTeams) {
+  return typeof e.shareTeam === 'string' && myTeams.has(e.shareTeam)
+    && (e.sync !== 'synced' || !e.remote || e.remote.teamId !== e.shareTeam);
 }
-function needsUnshare(e) {
-  return e.shared !== true && Boolean(e.remote);
+// Is it online in one of my teams that it's no longer shared with?
+function needsRemoving(e, myTeams) {
+  return Boolean(e.remote) && myTeams.has(e.remote.teamId) && e.remote.teamId !== e.shareTeam;
 }
 
 export async function countPending() {
-  const team = getTeam();
-  if (!team) return 0;
+  const myTeams = new Set(getTeams().map((t) => t.teamId));
+  if (!myTeams.size) return 0;
   const entries = await getAllEntries();
   const deletes = (await readKey('pendingDeletes')) || [];
-  return entries.filter((e) => needsUpload(e, team) || needsUnshare(e)).length + deletes.length;
+  return entries.filter((e) => needsUpload(e, myTeams) || needsRemoving(e, myTeams)).length + deletes.length;
 }
 
 // Sync in a moment (lets several quick changes share one run).
@@ -87,7 +92,9 @@ export function syncNow() {
 }
 
 async function runSync() {
-  if (!isCloudConfigured() || !getTeam()) return;
+  if (!isCloudConfigured()) return;
+  const account = await getAccount();
+  if (!account || account.anonymous) return;     // sign in with Google first
   setStatus({ pending: await countPending() });
   if (!navigator.onLine) {
     setStatus({ state: 'offline' });
@@ -95,17 +102,15 @@ async function runSync() {
   }
   setStatus({ state: 'syncing', error: null });
   try {
-    const team = await refreshTeam();
-    if (!team) {
-      setStatus({ state: 'idle', pending: 0 });
-      return;
-    }
+    const teams = await refreshTeams();
+    const myTeams = new Map(teams.map((t) => [t.teamId, t]));
     await pushDeletes();
     for (const e of await getAllEntries()) {
-      if (needsUpload(e, team)) await uploadEntry(e, team);
-      else if (needsUnshare(e)) await unshareEntry(e);
+      if (needsRemoving(e, myTeams)) await removeFromTeam(e);
+      const current = await getEntry(e.id);
+      if (current && needsUpload(current, myTeams)) await uploadEntry(current, myTeams.get(current.shareTeam), account.userId);
     }
-    await pullTeamEntries(team);
+    await pullTeamEntries(teams, account.userId);
     setStatus({ state: 'idle', lastSynced: new Date().toISOString(), pending: await countPending() });
   } catch (err) {
     console.warn('Sync failed', err);
@@ -117,17 +122,22 @@ async function runSync() {
 
 const plainMime = (mime) => (mime || '').split(';')[0].trim();
 
-async function uploadEntry(e, team) {
+async function uploadEntry(e, team, userId) {
   // File names include the edit time, so an edited entry gets new files
   // (and an interrupted upload can safely be retried).
   const stamp = Date.parse(e.updatedAt);
-  const folder = `${team.teamId}/${team.userId}/${e.id}`;
+  const folder = `${team.teamId}/${userId}/${e.id}`;
   const before = new Set(e.remote && e.remote.teamId === team.teamId ? remotePaths(e.remote) : []);
 
-  async function put(blob, name, mime) {
+  // Upload one file (pictures are made WebP first, max 3 MB).
+  async function put(blob, name, kind) {
     if (!blob) return null;
-    const path = `${folder}/${stamp}-${name}`;
-    if (!before.has(path)) await files.upload(path, blob, mime);
+    const isPicture = kind === 'picture';
+    const path = `${folder}/${stamp}-${name}${isPicture ? '.webp' : ''}`;
+    if (!before.has(path)) {
+      const data = isPicture ? await toWebp(blob, name.startsWith('drawing') ? 0.9 : 0.82) : blob;
+      await files.upload(path, data, isPicture ? 'image/webp' : kind);
+    }
     return path;
   }
 
@@ -135,12 +145,12 @@ async function uploadEntry(e, team) {
   const list = photosOf(e);
   for (let i = 0; i < list.length; i++) {
     photos.push({
-      photo: await put(list[i].photo, `photo-${i + 1}.jpg`, 'image/jpeg'),
-      drawing: await put(list[i].drawing, `drawing-${i + 1}.png`, 'image/png'),
+      photo: await put(list[i].photo, `photo-${i + 1}`, 'picture'),
+      drawing: await put(list[i].drawing, `drawing-${i + 1}`, 'picture'),
     });
   }
   const paths = {
-    thumb: await put(e.thumb, 'thumb.jpg', 'image/jpeg'),
+    thumb: await put(e.thumb, 'thumb', 'picture'),
     audio: await put(e.audio, `audio.${audioExtension(e.audioMime)}`, plainMime(e.audioMime) || 'audio/webm'),
     photos,
   };
@@ -148,7 +158,7 @@ async function uploadEntry(e, team) {
   await table.upsert('entries', {
     id: e.id,
     team_id: team.teamId,
-    user_id: team.userId,
+    user_id: userId,
     type: e.type,
     stage: e.stage || null,
     caption: e.caption || '',
@@ -175,27 +185,28 @@ async function uploadEntry(e, team) {
   await putEntry({
     ...current,
     remote: { teamId: team.teamId, ...paths },
-    sync: current.updatedAt === e.updatedAt ? 'synced' : 'pending',
+    sync: current.updatedAt === e.updatedAt && current.shareTeam === team.teamId ? 'synced' : 'pending',
   });
 }
 
-// (If the connection drops half way, the entry keeps its remote info and the
-// next sync tries again; deleting a row or file twice is harmless.)
-async function unshareEntry(e) {
+// Take an entry out of the team it was uploaded to (sharing switched off, or
+// switched to another team). If the connection drops half way, the entry keeps
+// its remote info and the next sync tries again; deleting twice is harmless.
+async function removeFromTeam(e) {
   await table.remove('entries', `id=eq.${e.id}`);
   await files.remove(remotePaths(e.remote));
   await deleteTeamEntry(e.id);
   const current = await getEntry(e.id);
-  if (current) await putEntry({ ...current, remote: null, sync: 'synced' });
+  if (current) await putEntry({ ...current, remote: null, sync: typeof current.shareTeam === 'string' ? 'pending' : 'synced' });
 }
 
 // ---- Deletes ----
 
-// Called when an entry is deleted on the phone: remember to remove it from the team too.
+// Called when an entry is deleted on the phone: remember to remove it from its team too.
 export async function queueRemoteDelete(entry) {
   if (!entry.remote) return;
   const list = (await readKey('pendingDeletes')) || [];
-  list.push({ id: entry.id, paths: remotePaths(entry.remote) });
+  list.push({ id: entry.id, teamId: entry.remote.teamId, paths: remotePaths(entry.remote) });
   await writeKey('pendingDeletes', list);
   await deleteTeamEntry(entry.id);
   syncSoon();
@@ -212,7 +223,7 @@ async function pushDeletes() {
   }
 }
 
-// ---- Download the team's entries ----
+// ---- Download each team's entries ----
 
 // A team entry as stored on the phone. paths = where its files are online;
 // photos/thumb/audio = the downloaded files (thumb at once, the rest when opened/exported).
@@ -239,34 +250,36 @@ function fromRow(r) {
   };
 }
 
-async function pullTeamEntries(team) {
-  const rows = await table.select('entries', `team_id=eq.${team.teamId}&order=created_at.desc&select=*`);
+async function pullTeamEntries(teams, userId) {
   const cached = new Map((await getAllTeamEntries()).map((e) => [e.id, e]));
   const mine = new Map((await getAllEntries()).map((e) => [e.id, e]));
   const seen = new Set();
 
-  for (const row of rows) {
-    seen.add(row.id);
-    const rec = fromRow(row);
-    const old = cached.get(row.id);
-    if (old && old.updatedAt === rec.updatedAt && Array.isArray(old.photos)) {
-      rec.photos = old.photos;   // unchanged: keep downloaded files
-      rec.thumb = old.thumb;
-      rec.audio = old.audio;
+  for (const team of teams) {
+    const rows = await table.select('entries', `team_id=eq.${team.teamId}&order=created_at.desc&select=*`);
+    for (const row of rows) {
+      seen.add(row.id);
+      const rec = fromRow(row);
+      const old = cached.get(row.id);
+      if (old && old.updatedAt === rec.updatedAt && Array.isArray(old.photos)) {
+        rec.photos = old.photos;   // unchanged: keep downloaded files
+        rec.thumb = old.thumb;
+        rec.audio = old.audio;
+      }
+      if (row.user_id === userId && mine.has(row.id)) {
+        // My own entry: its files are already on this phone, don't store them twice.
+        rec.localCopy = true;
+        rec.photos = rec.photos.map(() => ({ photo: null, drawing: null }));
+        rec.thumb = null;
+        rec.audio = null;
+      } else if (!rec.thumb && rec.paths.thumb) {
+        rec.thumb = await files.download(rec.paths.thumb).catch(() => null);
+      }
+      await putTeamEntry(rec);
     }
-    if (row.user_id === team.userId && mine.has(row.id)) {
-      // My own entry: its files are already on this phone, don't store them twice.
-      rec.localCopy = true;
-      rec.photos = rec.photos.map(() => ({ photo: null, drawing: null }));
-      rec.thumb = null;
-      rec.audio = null;
-    } else if (!rec.thumb && rec.paths.thumb) {
-      rec.thumb = await files.download(rec.paths.thumb).catch(() => null);
-    }
-    await putTeamEntry(rec);
   }
   for (const id of cached.keys()) {
-    if (!seen.has(id)) await deleteTeamEntry(id);     // deleted from the team
+    if (!seen.has(id)) await deleteTeamEntry(id);     // deleted from the team, or team left
   }
 }
 
@@ -302,7 +315,7 @@ export function upgradeTeamRecord(rec) {
   return rec;
 }
 
-// Every online file of a team entry (used when the owner removes it).
+// Every online file of a team entry (used when it's removed from the team).
 export function teamEntryPaths(rec) {
   upgradeTeamRecord(rec);
   return [rec.paths.thumb, rec.paths.audio, ...rec.paths.photos.flatMap((p) => [p.photo, p.drawing])].filter(Boolean);

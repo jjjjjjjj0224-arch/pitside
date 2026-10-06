@@ -525,6 +525,22 @@ h1:focus { outline: none; }
 .switch:checked::after { transform: translateX(24px); }
 .switch:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 
+/* Teams list */
+.account-card { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; }
+.account-card > div { display: flex; flex-direction: column; min-width: 0; }
+.account-email { font-size: 15px; overflow-wrap: anywhere; }
+.team-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.team-row {
+  display: flex; flex-direction: column; gap: 2px; min-height: 56px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--text); text-decoration: none; background: var(--surface);
+}
+.team-row:active { background: #EEF2FF; }
+.team-row-name { font-weight: 700; }
+.share-old { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.share-old-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.team-picker { margin-bottom: -6px; }
+
 /* Team screen */
 .team-name { font-size: 1.4rem; }
 .code-box {

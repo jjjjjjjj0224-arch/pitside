@@ -1,7 +1,7 @@
 // Talks to Supabase (the online database and file storage for teams) using
 // plain fetch() calls, instead of the Supabase library.
 //
-//   Auth:     /auth/v1/...     sign in (no email: an anonymous account per phone)
+//   Auth:     /auth/v1/...     sign in with Google (Supabase Auth, PKCE flow)
 //   Database: /rest/v1/...     read/write tables and call the team functions
 //   Storage:  /storage/v1/...  upload/download photos, drawings and voice notes
 //
@@ -30,7 +30,8 @@ export class CloudError extends Error {
 
 // ---- Sign-in session ----
 
-let session = null;       // { access_token, refresh_token, expires_at, user_id }
+// { access_token, refresh_token, expires_at, user_id, email, name, anonymous }
+let session = null;
 let sessionLoaded = false;
 let refreshing = null;
 
@@ -42,17 +43,32 @@ async function loadSession() {
   return session;
 }
 
+// The part of a sign-in token we can read: who it's for, and if it's anonymous.
+function tokenClaims(token) {
+  try {
+    const part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(part));
+  } catch {
+    return {};
+  }
+}
+
 async function saveSession(data) {
   if (!data) {
     session = null;
     await deleteKey('session');
     return;
   }
+  const user = data.user || {};
+  const meta = user.user_metadata || {};
   session = {
     access_token: data.access_token,
     refresh_token: data.refresh_token,
     expires_at: data.expires_at || Math.floor(Date.now() / 1000) + (data.expires_in || 3600),
-    user_id: data.user.id,
+    user_id: user.id,
+    email: user.email || '',
+    name: meta.full_name || meta.name || '',
+    anonymous: typeof user.is_anonymous === 'boolean' ? user.is_anonymous : Boolean(tokenClaims(data.access_token).is_anonymous),
   };
   await writeKey('session', session);
 }
@@ -63,28 +79,98 @@ async function readError(res) {
   return new CloudError(message, res.status, body.error_code || body.code || body.error);
 }
 
-// Sign in without an email. Supabase makes an "anonymous" account for this phone.
-async function signInAnonymously() {
-  const res = await fetch(`${baseUrl()}/auth/v1/signup`, {
-    method: 'POST',
-    headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ data: {} }),
-  });
-  if (!res.ok) throw await readError(res);
-  await saveSession(await res.json());
-  return session.user_id;
+// Who is signed in on this phone: { userId, email, name, anonymous } or null.
+// (anonymous = signed in by an older PitSide without Google; it needs a Google sign-in now.)
+export async function getAccount() {
+  const s = await loadSession();
+  if (!s) return null;
+  return { userId: s.user_id, email: s.email || '', name: s.name || '', anonymous: isAnonymous(s) };
 }
 
-// Returns this phone's user id, signing in first if needed.
-export async function ensureSignedIn() {
-  const s = await loadSession();
-  if (s) return s.user_id;
-  return signInAnonymously();
+// Sessions saved by older versions don't have the "anonymous" field: read it from the token.
+function isAnonymous(s) {
+  return typeof s.anonymous === 'boolean' ? s.anonymous : Boolean(tokenClaims(s.access_token).is_anonymous);
 }
 
 export async function getUserId() {
   const s = await loadSession();
   return s ? s.user_id : null;
+}
+
+// ---- Sign in with Google (PKCE) ----
+// 1. Make a random secret ("verifier") and keep it on the phone.
+// 2. Send the browser to Supabase -> Google, with a hash of the secret ("challenge").
+// 3. Google sends the browser back to PitSide with ?code=...
+// 4. PitSide swaps the code + secret for a sign-in session.
+// Only this phone knows the secret, so a stolen code is useless to anyone else.
+
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function makePkce() {
+  const verifier = base64url(crypto.getRandomValues(new Uint8Array(48)));
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64url(new Uint8Array(hash)) };
+}
+
+// Where Google sends the browser back to: this app's own address (without #...).
+const appAddress = () => `${location.origin}${location.pathname}`;
+
+// Leave the app for the Google sign-in page. (Kept in an object so tests can replace it.)
+export const browser = { go: (url) => window.location.assign(url) };
+
+// returnHash: the screen to show after signing in, e.g. '#/team' or '#/join/ABC234'.
+export async function startGoogleSignIn(returnHash = '#/team') {
+  const { verifier, challenge } = await makePkce();
+  const params = `provider=google&redirect_to=${encodeURIComponent(appAddress())}`
+    + `&code_challenge=${challenge}&code_challenge_method=s256`;
+  const current = await loadSession();
+
+  let url;
+  if (current && isAnonymous(current)) {
+    // Phone joined a team before Google sign-in existed: link Google to that same
+    // account, so it keeps its teams. (Needs "Allow manual linking" in Supabase.)
+    const res = await request(`/auth/v1/user/identities/authorize?${params}&skip_http_redirect=true`, { raw: true })
+      .catch(() => null);
+    const body = res ? await res.json().catch(() => null) : null;
+    url = body && body.url;
+  }
+  if (!url) url = `${baseUrl()}/auth/v1/authorize?${params}`;
+
+  await writeKey('pkce', { verifier, returnHash, at: Date.now() });
+  browser.go(url);
+}
+
+// Called when the app opens. If we just came back from Google (?code=... or ?error=...),
+// finish signing in. Returns { returnHash, error } or null if this wasn't a sign-in return.
+export async function finishGoogleSignIn() {
+  const query = new URLSearchParams(location.search);
+  const code = query.get('code');
+  const error = query.get('error_description') || query.get('error');
+  if (!code && !error) return null;
+
+  const saved = (await readKey('pkce')) || {};
+  await deleteKey('pkce');
+  const returnHash = saved.returnHash || '#/team';
+  // Remove ?code=... from the address bar (so a reload doesn't try again).
+  history.replaceState(history.state, '', `${appAddress()}${returnHash}`);
+
+  if (error) return { returnHash, error: friendlyError(new CloudError(error.replace(/\+/g, ' '), 400, query.get('error'))) };
+  if (!saved.verifier) return { returnHash, error: 'Sign-in was started on another page. Please try again.' };
+  try {
+    const res = await fetch(`${baseUrl()}/auth/v1/token?grant_type=pkce`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auth_code: code, code_verifier: saved.verifier }),
+    });
+    if (!res.ok) throw await readError(res);
+    await saveSession(await res.json());
+    return { returnHash, error: null };
+  } catch (err) {
+    console.warn('Sign-in failed', err);
+    return { returnHash, error: friendlyError(err) };
+  }
 }
 
 // Sign-in tokens last about an hour; swap the refresh token for a new one when needed.
@@ -113,7 +199,15 @@ async function refreshSession() {
   return session.access_token;
 }
 
+// Sign out on this phone (tells Supabase too, if online).
 export async function signOut() {
+  const s = await loadSession();
+  if (s && navigator.onLine) {
+    await fetch(`${baseUrl()}/auth/v1/logout?scope=local`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${s.access_token}` },
+    }).catch(() => {});
+  }
   await saveSession(null);
 }
 
@@ -184,18 +278,26 @@ export const files = {
 export function friendlyError(err) {
   if (!navigator.onLine || err instanceof TypeError) return 'No internet connection. Try again when you\'re online.';
   const text = `${err.code} ${err.message}`;
-  if (/already_in_team/.test(text)) return 'You\'re already in a team. Leave it first.';
   if (/bad_code/.test(text)) return 'No team has that code. Check it and try again.';
   if (/too_many_attempts/.test(text)) return 'Too many wrong codes. Wait an hour and try again.';
+  if (/too_many_teams/.test(text)) return 'You\'re in the most teams allowed (20). Leave one first.';
   if (/not_owner/.test(text)) return 'Only the team owner can do that.';
-  if (/anonymous_provider_disabled|Anonymous sign-ins are disabled/i.test(text)) {
-    return 'Team sign-in is switched off. In Supabase, turn on "Allow anonymous sign-ins".';
+  if (/need_google_sign_in/.test(text)) return 'Sign in with Google first (Team screen).';
+  if (/provider is not enabled|Unsupported provider/i.test(text)) {
+    return 'Google sign-in isn\'t switched on yet. In Supabase: Authentication > Sign In / Providers > Google.';
+  }
+  if (/access_denied|cancel/i.test(text)) return 'Sign-in was cancelled.';
+  if (/flow state|code verifier|code_verifier|bad_code_verifier|invalid_grant/i.test(text)) {
+    return 'That sign-in didn\'t finish in time. Please tap Sign in with Google again.';
+  }
+  if (/redirect|not allowed/i.test(text)) {
+    return 'Supabase doesn\'t allow this app address yet. Add it in Authentication > URL Configuration.';
   }
   if (/'photos' column|column .*photos/i.test(text)) {
     return 'The team database needs a quick update: in Supabase, run supabase/schema.sql again.';
   }
   if (err.status === 429) return 'Too many sign-ins from this network. Try again in a while.';
-  if (/session_expired|not_signed_in/.test(text)) return 'Your team sign-in ended. Join the team again with its code.';
+  if (/session_expired|not_signed_in/.test(text)) return 'You\'re signed out. Sign in with Google again on the Team screen.';
   if (err.status === 401 || err.status === 403) return 'Not allowed. You may have been removed from the team.';
   return err.message || 'Something went wrong.';
 }

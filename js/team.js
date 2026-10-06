@@ -1,115 +1,157 @@
-// Which team this phone is in, and the team actions (create, join, leave...).
+// Your teams, and the team actions (create, join, leave, members, new code).
+// You can be in several teams. Signing in with Google on a new phone brings
+// your teams back, because they belong to your Google account.
 //
-// The team info is also kept on the phone, so the app knows its team when offline:
-//   { teamId, teamName, joinCode, role: 'owner' | 'member', userId, displayName }
+// The list is also kept on the phone, so the app knows your teams offline:
+//   [{ teamId, teamName, joinCode, role: 'owner' | 'member', displayName }]
 
-import { readKey, writeKey, deleteKey, getAllEntries, putEntry, clearTeamEntries } from './db.js';
-import { ensureSignedIn, getUserId, rpc, table, files, CloudError, isCloudConfigured } from './cloud.js';
+import { readKey, writeKey, deleteKey, getAllEntries, putEntry, getAllTeamEntries, deleteTeamEntry, clearTeamEntries } from './db.js';
+import { getAccount, rpc, table, files, CloudError, isCloudConfigured, signOut as cloudSignOut } from './cloud.js';
 
-let state = null;
+let teams = [];
 
-export async function loadTeam() {
-  state = isCloudConfigured() ? (await readKey('team')) || null : null;
-  return state;
+export async function loadTeams() {
+  if (!isCloudConfigured()) { teams = []; return teams; }
+  teams = (await readKey('teams')) || [];
+  // PitSide v1.1/1.2 kept a single team under "team": move it into the list.
+  const old = await readKey('team');
+  if (old && old.teamId) {
+    if (!teams.some((t) => t.teamId === old.teamId)) {
+      teams.push({ teamId: old.teamId, teamName: old.teamName, joinCode: old.joinCode, role: old.role, displayName: old.displayName });
+    }
+    // Entries shared under v1.1/1.2 ("shared: true") were shared with that team.
+    for (const e of await getAllEntries()) {
+      if (e.shareTeam !== undefined || e.shared === undefined) continue;
+      const shareTeam = e.shared === true ? (e.remote && e.remote.teamId) || old.teamId : null;
+      const { shared, ...rest } = e;
+      await putEntry({ ...rest, shareTeam });
+    }
+    await writeKey('teams', teams);
+    await deleteKey('team');
+  }
+  return teams;
 }
 
-// Synchronous: the team loaded at start-up (null = not in a team).
-export function getTeam() {
-  return state;
+// All my teams (synchronous; loaded at start-up).
+export function getTeams() {
+  return teams;
 }
 
-async function setTeam(next) {
-  state = next;
-  if (next) await writeKey('team', next);
-  else await deleteKey('team');
-  window.dispatchEvent(new CustomEvent('pitside-team', { detail: next }));
+export function getTeamById(teamId) {
+  return teams.find((t) => t.teamId === teamId) || null;
 }
 
-function fromTeamRow(t, role, userId, displayName) {
-  return { teamId: t.id, teamName: t.name, joinCode: t.join_code, role, userId, displayName };
+async function setTeams(next) {
+  teams = next;
+  await writeKey('teams', teams);
+  window.dispatchEvent(new CustomEvent('pitside-team', { detail: teams }));
+}
+
+function fromTeamRow(t, role, displayName) {
+  return { teamId: t.id, teamName: t.name, joinCode: t.join_code, role, displayName };
+}
+
+async function requireAccount() {
+  const account = await getAccount();
+  if (!account || account.anonymous) throw new CloudError('need_google_sign_in', 401, 'need_google_sign_in');
+  return account;
 }
 
 export async function createTeam(teamName, displayName) {
-  const userId = await ensureSignedIn();
+  await requireAccount();
   const t = await rpc('create_team', { team_name: teamName, member_name: displayName });
-  await setTeam(fromTeamRow(t, 'owner', userId, displayName));
-  return state;
+  const team = fromTeamRow(t, 'owner', displayName);
+  await setTeams([...teams, team]);
+  return team;
 }
 
 export async function joinTeam(code, displayName) {
-  const userId = await ensureSignedIn();
+  await requireAccount();
   const t = await rpc('join_team', { code, member_name: displayName });
   if (!t || !t.id) throw new CloudError('bad_code', 404, 'bad_code');
-  await setTeam(fromTeamRow(t, 'member', userId, displayName));
-  return state;
+  const existing = getTeamById(t.id);
+  const team = fromTeamRow(t, existing ? existing.role : 'member', displayName);
+  await setTeams([...teams.filter((x) => x.teamId !== t.id), team]);
+  return team;
 }
 
-// Ask the server what team we're in (name, code or owner may have changed,
-// or the owner may have removed us). Returns the team, or null if not in one.
-export async function refreshTeam() {
-  if (!state) return null;
-  const userId = await getUserId();
-  const rows = userId
-    ? await table.select('team_members', `user_id=eq.${userId}&select=role,display_name,teams(id,name,join_code)`)
-    : [];
-  const row = rows && rows[0];
-  if (!row || !row.teams) {
-    await forgetTeam();
-    window.dispatchEvent(new CustomEvent('pitside-removed'));
-    return null;
+// Ask the server which teams I'm in (names, codes or roles may have changed,
+// I may have been removed, or I may have joined on another phone).
+// Returns the up-to-date list.
+export async function refreshTeams() {
+  const account = await getAccount();
+  if (!account) return teams;
+  const rows = await table.select('team_members', `user_id=eq.${account.userId}&select=role,display_name,teams(id,name,join_code)`);
+  const next = (rows || []).filter((r) => r.teams).map((r) => fromTeamRow(r.teams, r.role, r.display_name));
+  const removed = teams.filter((t) => !next.some((n) => n.teamId === t.teamId));
+  for (const t of removed) {
+    await forgetTeam(t.teamId);
+    window.dispatchEvent(new CustomEvent('pitside-removed', { detail: t }));
   }
-  const next = fromTeamRow(row.teams, row.role, userId, row.display_name);
-  if (JSON.stringify(next) !== JSON.stringify(state)) await setTeam(next);
-  return state;
+  if (JSON.stringify(next) !== JSON.stringify(teams)) await setTeams(next);
+  return teams;
 }
 
-export async function listMembers() {
-  return table.select('team_members', `team_id=eq.${state.teamId}&select=user_id,display_name,role,joined_at&order=joined_at`);
+export async function listMembers(teamId) {
+  return table.select('team_members', `team_id=eq.${teamId}&select=user_id,display_name,role,joined_at&order=joined_at`);
 }
 
-export async function removeMember(userId) {
-  await table.remove('team_members', `team_id=eq.${state.teamId}&user_id=eq.${userId}`);
+export async function removeMember(teamId, userId) {
+  await table.remove('team_members', `team_id=eq.${teamId}&user_id=eq.${userId}`);
 }
 
-export async function resetJoinCode() {
-  const code = await rpc('reset_join_code', { team: state.teamId });
-  await setTeam({ ...state, joinCode: code });
+export async function resetJoinCode(teamId) {
+  const code = await rpc('reset_join_code', { team: teamId });
+  await setTeams(teams.map((t) => (t.teamId === teamId ? { ...t, joinCode: code } : t)));
   return code;
 }
 
+// Change the name teammates see for me (in all my teams).
 export async function renameMe(name) {
-  if (!state) return;
+  if (!teams.length) return;
   await rpc('set_display_name', { member_name: name });
-  await setTeam({ ...state, displayName: name });
+  await setTeams(teams.map((t) => ({ ...t, displayName: name })));
 }
 
-// Leave the team. Your shared entries stay with the team (unless you are the
-// last member: then the team and all its shared entries and files are deleted).
-export async function leaveTeam({ lastMember = false } = {}) {
+// Leave one team. My shared entries stay with that team (unless I'm the last
+// member: then the team and all its shared entries and files are deleted).
+export async function leaveTeam(teamId, { lastMember = false } = {}) {
   if (lastMember) {
     // Delete the team's files first (the database rows go with the team).
-    const rows = await table.select('entries', `team_id=eq.${state.teamId}&select=photo_path,drawing_path,thumb_path,audio_path`);
-    const paths = rows.flatMap((r) => [r.photo_path, r.drawing_path, r.thumb_path, r.audio_path]).filter(Boolean);
+    const rows = await table.select('entries', `team_id=eq.${teamId}&select=photo_path,drawing_path,thumb_path,audio_path,photos`);
+    const paths = rows.flatMap((r) => [
+      r.photo_path, r.drawing_path, r.thumb_path, r.audio_path,
+      ...((r.photos || []).flatMap((p) => [p.photo, p.drawing])),
+    ]).filter(Boolean);
     for (let i = 0; i < paths.length; i += 100) await files.remove(paths.slice(i, i + 100));
   }
-  await rpc('leave_team');
-  await forgetTeam();
+  await rpc('leave_team', { team: teamId });
+  await forgetTeam(teamId);
 }
 
-// Forget the team on this phone: entries stay, but are no longer linked to it,
-// so they won't upload to a future team unless you share them again.
-async function forgetTeam() {
+// Forget one team on this phone: my entries stay, but are no longer linked to it.
+async function forgetTeam(teamId) {
   for (const e of await getAllEntries()) {
-    if (e.remote || e.shared !== undefined || e.sync) {
-      await putEntry({ ...e, remote: null, shared: undefined, sync: null });
-    }
+    const linked = e.shareTeam === teamId || (e.remote && e.remote.teamId === teamId);
+    if (linked) await putEntry({ ...e, shareTeam: e.shareTeam === teamId ? null : e.shareTeam, remote: null, sync: null });
   }
+  for (const rec of await getAllTeamEntries()) {
+    if (rec.teamId === teamId) await deleteTeamEntry(rec.id);
+  }
+  const deletes = ((await readKey('pendingDeletes')) || []).filter((d) => d.teamId !== teamId);
+  await writeKey('pendingDeletes', deletes);
+  await setTeams(teams.filter((t) => t.teamId !== teamId));
+}
+
+// Sign out of Google on this phone. I stay a member of my teams (signing in
+// again brings them back); my entries stay on the phone.
+export async function signOut() {
+  await cloudSignOut();
   await clearTeamEntries();
-  await deleteKey('pendingDeletes');
-  await setTeam(null);
+  await setTeams([]);
 }
 
 // The link people tap to join (it opens PitSide with the code filled in).
-export function inviteLink(code = state && state.joinCode) {
+export function inviteLink(code) {
   return `${location.origin}${location.pathname}#/join/${code}`;
 }

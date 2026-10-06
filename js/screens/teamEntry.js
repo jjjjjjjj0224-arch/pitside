@@ -5,8 +5,8 @@
 import { getTeamEntry, getEntry, deleteTeamEntry } from '../db.js';
 import { getSettings } from '../settings.js';
 import { go, goBack } from '../router.js';
-import { getTeam } from '../team.js';
-import { table, files, friendlyError } from '../cloud.js';
+import { getTeamById } from '../team.js';
+import { table, files, friendlyError, getAccount } from '../cloud.js';
 import { loadTeamFiles, upgradeTeamRecord, teamEntryPaths } from '../sync.js';
 import { galleryHtml, mountGallery } from '../gallery.js';
 import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
@@ -19,7 +19,8 @@ export async function renderTeamEntry(el, id) {
     return {};
   }
   const found = await getTeamEntry(id);
-  const team = getTeam();
+  const team = found ? getTeamById(found.teamId) : null;
+  const account = await getAccount();
   if (!found || !team) {
     el.innerHTML = `
       <header class="topbar"><a class="btn btn-ghost" href="#/home">Home</a><h1>Team entry</h1><span class="topbar-spacer"></span></header>
@@ -30,7 +31,8 @@ export async function renderTeamEntry(el, id) {
   let rec = upgradeTeamRecord(found);
   const urls = new UrlBag();
   const settings = getSettings();
-  const canRemove = rec.userId === team.userId || team.role === 'owner';
+  const isMine = Boolean(account) && rec.userId === account.userId;
+  const canRemove = isMine || team.role === 'owner';
   const photoCount = rec.paths.photos.length;
   const base = baseName(rec);
   let player = null;
@@ -127,7 +129,7 @@ export async function renderTeamEntry(el, id) {
     removeBtn.addEventListener('click', async () => {
       const ok = await confirmDialog({
         title: 'Remove from team?',
-        message: `${rec.userId === team.userId ? 'Your' : `${rec.author}'s`} entry will be deleted from the team for everyone.`,
+        message: `${isMine ? 'Your' : `${rec.author}'s`} entry will be deleted from ${team.teamName} for everyone.`,
         confirmText: 'Remove',
         danger: true,
       });

@@ -3,7 +3,7 @@
 import { getAllEntries, getAllTeamEntries } from '../db.js';
 import { getSettings } from '../settings.js';
 import { isCloudConfigured } from '../cloud.js';
-import { getTeam } from '../team.js';
+import { getTeams } from '../team.js';
 import { getSyncStatus, syncSoon } from '../sync.js';
 import { photosOf } from '../image.js';
 import { TYPES, TYPE_LABELS, STAGE_LABELS, esc, formatDateTime, typeBadge, UrlBag } from '../ui.js';
@@ -11,6 +11,7 @@ import { TYPES, TYPE_LABELS, STAGE_LABELS, esc, formatDateTime, typeBadge, UrlBa
 // Remember the chosen filter and view while the app is open.
 let filter = 'all';
 let view = 'mine';     // 'mine' or 'team'
+let shownTeam = null;  // which team's entries the Team view shows
 
 export async function renderHome(el) {
   const urls = new UrlBag();
@@ -33,6 +34,7 @@ export async function renderHome(el) {
         <button type="button" class="seg-btn" data-view="mine">Mine</button>
         <button type="button" class="seg-btn" data-view="team">Team</button>
       </div>
+      <div class="chips team-picker" role="group" aria-label="Which team" hidden></div>
       <div class="chips" role="group" aria-label="Show entries">
         ${['all', ...TYPES].map((t) => `
           <button type="button" class="chip" data-filter="${t}">${t === 'all' ? 'All' : TYPE_LABELS[t]}</button>`).join('')}
@@ -48,14 +50,16 @@ export async function renderHome(el) {
   const teamCard = el.querySelector('.team-card');
   const viewSwitch = el.querySelector('.view-switch');
 
-  // Team status line, e.g. "Team: VEX 1234A · 2 waiting to upload".
+  const teamPicker = el.querySelector('.team-picker');
+
+  // Team status line, e.g. "Teams: VEX 1234A + 1 more · 2 waiting to upload".
   function drawTeamCard() {
-    const team = getTeam();
+    const teams = getTeams();
     teamCard.hidden = !isCloudConfigured();
-    viewSwitch.hidden = !team;
-    if (!team) {
+    viewSwitch.hidden = !teams.length;
+    if (!teams.length) {
       view = 'mine';
-      teamCard.innerHTML = '<span><strong>Team:</strong> not joined</span><span class="team-card-action">Join or create</span>';
+      teamCard.innerHTML = '<span><strong>Team:</strong> not joined</span><span class="team-card-action">Sign in · join or create</span>';
       return;
     }
     const s = getSyncStatus();
@@ -64,27 +68,38 @@ export async function renderHome(el) {
     else if (s.pending && (s.state === 'offline' || !navigator.onLine)) status = `${s.pending} waiting for internet`;
     else if (s.pending) status = `${s.pending} waiting to upload`;
     else if (s.state === 'error') status = 'Sync problem. Tap to see';
-    teamCard.innerHTML = `<span><strong>Team:</strong> ${esc(team.teamName)}</span><span class="team-card-action">${esc(status)}</span>`;
+    const names = teams.length === 1 ? teams[0].teamName : `${teams[0].teamName} + ${teams.length - 1} more`;
+    teamCard.innerHTML = `<span><strong>${teams.length === 1 ? 'Team' : 'Teams'}:</strong> ${esc(names)}</span><span class="team-card-action">${esc(status)}</span>`;
+  }
+
+  // In the Team view with several teams: chips to pick which team to show.
+  function drawTeamPicker() {
+    const teams = getTeams();
+    if (!teams.some((t) => t.teamId === shownTeam)) shownTeam = teams[0] ? teams[0].teamId : null;
+    teamPicker.hidden = view !== 'team' || teams.length < 2;
+    teamPicker.innerHTML = teams.map((t) => `
+      <button type="button" class="chip" data-team="${esc(t.teamId)}" aria-pressed="${t.teamId === shownTeam}">${esc(t.teamName)}</button>`).join('');
   }
 
   async function load() {
     entries = await getAllEntries();
-    teamEntries = getTeam() ? await getAllTeamEntries() : [];
+    teamEntries = getTeams().length ? await getAllTeamEntries() : [];
   }
 
   function draw() {
     drawTeamCard();
+    drawTeamPicker();
     el.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)));
     el.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
 
-    const source = view === 'team' ? teamEntries : entries;
+    const source = view === 'team' ? teamEntries.filter((e) => e.teamId === shownTeam) : entries;
     const shown = filter === 'all' ? source : source.filter((e) => e.type === filter);
     const localThumbs = new Map(entries.map((e) => [e.id, e.thumb]));
 
     urls.revokeAll();
     list.innerHTML = shown.map((e) => (view === 'team'
       ? entryCard(e, settings, urls, { team: true, thumb: e.thumb || localThumbs.get(e.id) })
-      : entryCard(e, settings, urls, { team: false, thumb: e.thumb, inTeam: Boolean(getTeam()) }))).join('');
+      : entryCard(e, settings, urls, { team: false, thumb: e.thumb, teams: getTeams() }))).join('');
 
     if (view === 'team') {
       empty.textContent = source.length === 0
@@ -112,6 +127,12 @@ export async function renderHome(el) {
     draw();
     if (view === 'team') syncSoon(0);   // get the latest team entries
   });
+  teamPicker.addEventListener('click', (e) => {
+    const chip = e.target.closest('[data-team]');
+    if (!chip) return;
+    shownTeam = chip.dataset.team;
+    draw();
+  });
 
   // Redraw when a sync finishes (new team entries, upload status).
   const onSync = async () => { await load(); draw(); };
@@ -120,7 +141,7 @@ export async function renderHome(el) {
 
   await load();
   draw();
-  if (getTeam()) syncSoon(300);
+  if (getTeams().length) syncSoon(300);
 
   return {
     unmount() {
@@ -132,7 +153,7 @@ export async function renderHome(el) {
 }
 
 // One row in the list: thumbnail, type, first line of caption, date, mic marker.
-function entryCard(entry, settings, urls, { team, thumb, inTeam }) {
+function entryCard(entry, settings, urls, { team, thumb, teams = [] }) {
   const firstLine = (entry.caption || '').split('\n').find((l) => l.trim()) || '';
   // (Team copies saved by an older version have paths.photo instead of paths.photos until the next sync.)
   const teamPhotoCount = (p) => (p.photos ? p.photos.length : Number(Boolean(p.photo)));
@@ -146,10 +167,14 @@ function entryCard(entry, settings, urls, { team, thumb, inTeam }) {
   const hasAudio = team ? Boolean(entry.paths && entry.paths.audio) : Boolean(entry.audio);
   const href = team ? `#/team-entry/${encodeURIComponent(entry.id)}` : `#/entry/${encodeURIComponent(entry.id)}`;
 
+  // My entries: which team it's shared with, and whether it's uploaded yet.
   let shareTag = '';
-  if (!team && inTeam) {
-    if (entry.shared === true && entry.sync === 'synced' && entry.remote) shareTag = '<span class="share-tag">Shared</span>';
-    else if (entry.shared === true) shareTag = '<span class="share-tag pending">Waiting to upload</span>';
+  const shareTeam = !team && teams.find((t) => t.teamId === entry.shareTeam);
+  if (shareTeam) {
+    const label = teams.length > 1 ? esc(shareTeam.teamName) : 'Shared';
+    shareTag = entry.sync === 'synced' && entry.remote && entry.remote.teamId === entry.shareTeam
+      ? `<span class="share-tag">${label}</span>`
+      : '<span class="share-tag pending">Waiting to upload</span>';
   }
 
   return `

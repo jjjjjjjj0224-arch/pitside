@@ -4,7 +4,7 @@
 //
 // When you change any app file, bump VERSION so phones download the new files.
 
-const VERSION = 'pitside-v1.2.1';
+const VERSION = 'pitside-v1.3.0';
 
 // Every file the app needs. Paths are relative to this file, so the app also
 // works from a sub-folder (for example GitHub Pages: /your-repo/).
@@ -30,6 +30,8 @@ const APP_SHELL = [
   './js/sync.js',
   './js/gallery.js',
   './js/viewer.js',
+  './js/webp.js',
+  // (js/vendor/webp/* is cached the first time an iPhone needs it, not up front.)
   './js/screens/welcome.js',
   './js/screens/home.js',
   './js/screens/capture.js',

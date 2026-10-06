@@ -18,6 +18,8 @@ $types = @{
   '.ico' = 'image/x-icon'
   '.md' = 'text/plain; charset=utf-8'
   '.sql' = 'text/plain; charset=utf-8'
+  '.wasm' = 'application/wasm'
+  '.webp' = 'image/webp'
 }
 
 $listener = New-Object System.Net.HttpListener

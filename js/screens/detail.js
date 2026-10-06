@@ -7,16 +7,16 @@ import { goBack } from '../router.js';
 import { photosOf } from '../image.js';
 import { galleryHtml, mountGallery } from '../gallery.js';
 import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
-import { getTeam } from '../team.js';
+import { getTeams } from '../team.js';
 import { queueRemoteDelete } from '../sync.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
 
-// "Shared with VEX 1234A" / "Waiting to upload" / "Only on this phone"
-function shareStatus(entry, team) {
-  if (!team) return '';
-  if (entry.shared === true && entry.sync === 'synced' && entry.remote) return `Shared with ${team.teamName}`;
-  if (entry.shared === true) return 'Waiting to upload to your team (uploads when online)';
-  return 'Only on this phone (not shared with your team)';
+// "Shared with VEX 1234A" / "Waiting to upload to VEX 1234A" / "Only on this phone"
+function shareStatus(entry, teams) {
+  const team = teams.find((t) => t.teamId === entry.shareTeam);
+  if (!team) return 'Only on this phone (not shared)';
+  if (entry.sync === 'synced' && entry.remote && entry.remote.teamId === team.teamId) return `Shared with ${team.teamName}`;
+  return `Waiting to upload to ${team.teamName} (uploads when online)`;
 }
 
 export async function renderDetail(el, id) {
@@ -31,7 +31,7 @@ export async function renderDetail(el, id) {
   const urls = new UrlBag();
   const settings = getSettings();
   const accent = settings.export[entry.type].accent;
-  const team = getTeam();
+  const teams = getTeams();
   const edited = entry.updatedAt && entry.updatedAt.slice(0, 16) !== entry.createdAt.slice(0, 16);
   const photos = photosOf(entry);
   const base = baseName(entry);
@@ -63,7 +63,7 @@ export async function renderDetail(el, id) {
         <div><dt>Author</dt><dd>${esc(entry.author)}</dd></div>
         <div><dt>Date</dt><dd>${esc(formatDateTime(entry.createdAt))}</dd></div>
         ${edited ? `<div><dt>Edited</dt><dd>${esc(formatDateTime(entry.updatedAt))}</dd></div>` : ''}
-        ${team ? `<div><dt>Team</dt><dd>${esc(shareStatus(entry, team))}</dd></div>` : ''}
+        ${teams.length ? `<div><dt>Team</dt><dd>${esc(shareStatus(entry, teams))}</dd></div>` : ''}
       </dl>
 
       <div class="button-row three">

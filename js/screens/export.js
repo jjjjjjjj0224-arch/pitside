@@ -3,7 +3,7 @@
 
 import { getAllEntries, getAllTeamEntries } from '../db.js';
 import { getSettings } from '../settings.js';
-import { getTeam } from '../team.js';
+import { getTeams } from '../team.js';
 import { loadTeamFiles } from '../sync.js';
 import { photosOf } from '../image.js';
 import { goBack } from '../router.js';
@@ -12,7 +12,7 @@ import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast } from '..
 
 // Keep the user's choices while the app is open.
 const choice = {
-  source: 'mine',    // 'mine' | 'team' (whole team, when in a team)
+  source: 'mine',    // 'mine', or a team id (that whole team's shared entries)
   includePhotos: true,   // add a photos/ folder with the full-size photos
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
@@ -48,9 +48,9 @@ function rangeBounds() {
 export async function renderExport(el) {
   const settings = getSettings();
   const entries = await getAllEntries();
-  const team = getTeam();
-  const teamEntries = team ? await getAllTeamEntries() : [];
-  if (!team) choice.source = 'mine';
+  const teams = getTeams();
+  const teamEntries = teams.length ? await getAllTeamEntries() : [];
+  if (choice.source !== 'mine' && !teams.some((t) => t.teamId === choice.source)) choice.source = 'mine';
   if (!choice.from) {
     const today = new Date();
     choice.to = toInputDate(today);
@@ -64,12 +64,12 @@ export async function renderExport(el) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page export">
-      ${team ? `
+      ${teams.length ? `
       <fieldset class="field">
         <legend class="label">Entries from</legend>
         <div class="option-list">
           <label class="option"><input type="radio" name="source" value="mine"> <span>Just mine</span></label>
-          <label class="option"><input type="radio" name="source" value="team"> <span>Whole team (${esc(team.teamName)})</span></label>
+          ${teams.map((t) => `<label class="option"><input type="radio" name="source" value="${esc(t.teamId)}"> <span>Whole team: ${esc(t.teamName)}</span></label>`).join('')}
         </div>
       </fieldset>` : ''}
 
@@ -124,7 +124,7 @@ export async function renderExport(el) {
 
   function matching() {
     const { from, to } = rangeBounds();
-    const source = choice.source === 'team' ? teamEntries : entries;
+    const source = choice.source === 'mine' ? entries : teamEntries.filter((e) => e.teamId === choice.source);
     return source.filter((e) => {
       if (!choice.types.has(e.type)) return false;
       const t = new Date(e.createdAt);
@@ -179,7 +179,7 @@ export async function renderExport(el) {
   // Team export: teammates' photos and voice notes are downloaded first
   // (kept on the phone afterwards). My own entries use the copies on this phone.
   async function withFiles(list) {
-    if (choice.source !== 'team') return list;
+    if (choice.source === 'mine') return list;
     const mine = new Map(entries.map((e) => [e.id, e]));
     const ready = [];
     for (let i = 0; i < list.length; i++) {

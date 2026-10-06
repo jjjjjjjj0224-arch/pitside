@@ -9,7 +9,7 @@ import { resizePhoto, makeThumbnail, photosOf, MAX_PHOTOS } from '../image.js';
 import { openDrawMode } from '../draw.js';
 import { openViewer } from '../viewer.js';
 import { createVoiceNote } from '../recorder.js';
-import { getTeam } from '../team.js';
+import { getTeams } from '../team.js';
 import { syncSoon } from '../sync.js';
 import { TYPES, TYPE_LABELS, STAGES, STAGE_LABELS, esc, uuid, confirmDialog, toast, UrlBag } from '../ui.js';
 
@@ -24,7 +24,10 @@ export async function renderCapture(el, id) {
     return {};
   }
 
-  const team = getTeam();
+  // Teams this entry can be shared with. New entries start with the team used last.
+  const teams = getTeams();
+  const lastTeam = teams.some((t) => t.teamId === settings.lastShareTeam) ? settings.lastShareTeam : (teams[0] && teams[0].teamId);
+  let shareTouched = false;
 
   // Everything the user has entered so far. Kept in memory until Save, so a
   // failed save never loses anything.
@@ -37,7 +40,7 @@ export async function renderCapture(el, id) {
       audio: existing.audio || null,
       audioMime: existing.audioMime || null,
       matchNumber: existing.matchNumber || '',
-      shared: existing.shared === true,
+      shareTeam: typeof existing.shareTeam === 'string' ? existing.shareTeam : null,
     }
     : {
       type: settings.defaultType,
@@ -47,7 +50,7 @@ export async function renderCapture(el, id) {
       audio: null,
       audioMime: null,
       matchNumber: '',
-      shared: true,          // "Share with team" starts on (only used when in a team)
+      shareTeam: lastTeam || null,   // team id, or null = only on this phone
     };
 
   let dirty = false;          // true once anything is changed
@@ -140,14 +143,15 @@ export async function renderCapture(el, id) {
         </div>
       </div>
 
-      ${team ? `
-      <label class="switch-row">
-        <span>
-          <span class="label">Share with team</span>
-          <span class="hint switch-hint">${esc(team.teamName)} can see this entry</span>
-        </span>
-        <input type="checkbox" class="switch" data-share ${draft.shared ? 'checked' : ''}>
-      </label>` : ''}
+      ${teams.length ? `
+      <fieldset class="field share-field">
+        <legend class="label">Share with</legend>
+        <div class="option-list share-options">
+          <label class="option"><input type="radio" name="share" value="" ${draft.shareTeam ? '' : 'checked'}> <span>Only on this phone</span></label>
+          ${teams.map((t) => `
+          <label class="option"><input type="radio" name="share" value="${esc(t.teamId)}" ${draft.shareTeam === t.teamId ? 'checked' : ''}> <span>${esc(t.teamName)}</span></label>`).join('')}
+        </div>
+      </fieldset>` : ''}
     </main>
     <div class="savebar">
       <div class="savebar-inner">
@@ -378,16 +382,12 @@ export async function renderCapture(el, id) {
 
   captionEl.addEventListener('input', () => { draft.caption = captionEl.value; markDirty(); });
 
-  // ---- Share with team ----
-  const shareSwitch = $('[data-share]');
-  if (shareSwitch) {
-    const hint = $('.switch-hint');
-    const showShare = () => {
-      hint.textContent = shareSwitch.checked ? `${team.teamName} can see this entry` : 'Only on this phone';
-    };
-    shareSwitch.addEventListener('change', () => { draft.shared = shareSwitch.checked; markDirty(); showShare(); });
-    showShare();
-  }
+  // ---- Share with (one team, or only on this phone) ----
+  el.querySelectorAll('input[name="share"]').forEach((radio) => radio.addEventListener('change', () => {
+    draft.shareTeam = radio.value || null;
+    shareTouched = true;
+    markDirty();
+  }));
   matchEl.addEventListener('input', () => { draft.matchNumber = matchEl.value; markDirty(); });
 
   // When the phone keyboard opens, shrink the photo so the caption stays visible.
@@ -483,9 +483,10 @@ export async function renderCapture(el, id) {
       // (Read the latest upload info, in case a sync finished while editing.)
       const latest = existing ? await getEntry(existing.id) : null;
       entry.remote = latest ? latest.remote || null : null;
-      if (team) entry.shared = draft.shared;
-      else if (existing) entry.shared = existing.shared;
-      entry.sync = entry.shared === true || entry.remote ? 'pending' : null;
+      // shareTeam: team id, null (only on this phone), or undefined (saved before any team).
+      entry.shareTeam = teams.length && (shareTouched || !existing) ? draft.shareTeam : (existing ? existing.shareTeam : undefined);
+      entry.sync = typeof entry.shareTeam === 'string' || entry.remote ? 'pending' : null;
+      if (shareTouched && entry.shareTeam) saveSettings({ lastShareTeam: entry.shareTeam }).catch(() => {});
 
       await putEntry(entry);
       dirty = false;

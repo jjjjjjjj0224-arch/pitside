@@ -1,4 +1,4 @@
-# PitSide v1.2
+# PitSide v1.3
 
 A mobile-first Progressive Web App for VEX team members: save a quick evidence entry
 (photos + caption and/or voice note + entry type) in under 30 seconds, with no internet,
@@ -14,8 +14,11 @@ then export entries as slide-ready images for the engineering notebook in Google
 
 - Plain HTML, CSS and JavaScript (ES modules). No framework, no build step, no libraries.
 - Entries are saved on the device in IndexedDB first, so everything works offline.
-- **Teams (new in v1.1):** join a team with a 6-character code or invite link and see each
-  other's shared entries. Uses a free Supabase project. No email or password needed.
+- **Teams:** sign in with Google (v1.3), then create or join teams with a 6-character code
+  or invite link, and see each other's shared entries. You can be in **several teams**;
+  each entry is shared with one of them (or none). Uses a free Supabase project.
+- **WebP uploads (v1.3):** every picture is converted to WebP before it goes to Supabase,
+  at most 3 MB each (the phone keeps its own copy unchanged).
 - Works fully offline after the first load (service worker caches the whole app).
   Shared entries upload by themselves when the phone is back online.
 
@@ -74,51 +77,72 @@ If you add a new file, also add it to the `APP_SHELL` list in `sw.js`.
 
 ---
 
-## Team sharing setup (once, about 10 minutes)
+## Team sharing setup
 
-Until this is done, PitSide works exactly like v1 and shows no team features.
+Until this is done, PitSide works without teams (everything else works).
 
-1. **Create a free Supabase account and project** at <https://supabase.com>
-   (New project → pick a name and a database password → choose a region near you).
-2. **Turn on sign-in without email:** Authentication → Sign In / Providers →
-   **Allow anonymous sign-ins** → on → Save.
-3. **Create the database, file storage and security rules:** SQL Editor → New query →
-   paste all of [`supabase/schema.sql`](supabase/schema.sql) → **Run**.
-   It should say "Success. No rows returned". (It's safe to run again.)
-4. **Connect the app:** Project Settings → API Keys (or the **Connect** button) and copy
-   - the **Project URL** (`https://xxxx.supabase.co`)
-   - the **publishable** key (`sb_publishable_…`, or the legacy **anon public** key)
-
-   Put them in [`js/config.js`](js/config.js), bump `VERSION` in `sw.js`, and push.
+### 1. Supabase project
+1. Create a free account and project at <https://supabase.com>.
+2. **SQL Editor → New query** → paste all of [`supabase/schema.sql`](supabase/schema.sql) → **Run**
+   ("Success. No rows returned"). Run it again after every PitSide update that changes it;
+   it's safe to re-run and keeps your data.
+3. **Project Settings → API Keys**: put the **Project URL** and the **publishable** key
+   (`sb_publishable_…`) in [`js/config.js`](js/config.js), bump `VERSION` in `sw.js`, push.
    **Never** use the `secret` / `service_role` key in the app.
-5. Optional, if a whole class joins at once from one school Wi-Fi: Authentication →
-   Rate Limits → raise "anonymous sign-ins per hour" (default 30 per network).
+
+### 2. Google sign-in (about 10 minutes)
+1. **Google Cloud Console** (<https://console.cloud.google.com>, any Google account):
+   create a project (e.g. "PitSide").
+2. **APIs & Services → OAuth consent screen** (Google Auth Platform): app name "PitSide",
+   your email as support/developer contact, audience **External**. Then **Publish app**
+   (it only asks for name/email, so Google doesn't need to review it). While it's in
+   "Testing", only test users you add can sign in.
+3. **Clients → Create client → Web application.** Under **Authorized redirect URIs** add
+   your Supabase callback: `https://<your-project-ref>.supabase.co/auth/v1/callback`
+   (Supabase shows this exact address on its Google provider page). Create, then copy the
+   **Client ID** and **Client secret**.
+4. **Supabase → Authentication → Sign In / Providers → Google:** turn on, paste the
+   Client ID and Client secret, **Save**. (The secret goes only here, never in the app.)
+5. **Supabase → Authentication → URL Configuration:** set **Site URL** to the app's address
+   (e.g. `https://<username>.github.io/pitside/`) and add the same address under
+   **Redirect URLs**.
+6. **Supabase → Authentication → Sign In / Providers:**
+   - **Allow manual linking: on** (lets phones that joined a team before v1.3 keep their
+     team when they sign in with Google)
+   - **Allow anonymous sign-ins: off** (no longer used; this closes the "throwaway
+     accounts" gap)
 
 ### How teams work
 
-- **Create a team** (Team screen): you get a code like `ABC234` and an invite link.
-- **Join:** tap the invite link, or open PitSide → Team → type the code. No email or password.
-  Each phone signs in automatically (Supabase "anonymous" sign-in). A new phone joins
-  again as a new member; entries already shared stay with the team.
-- **Share with team:** a switch on every entry, **on** by default while you're in a team.
-  Switch it off for entries that should stay on your phone. Entries saved before joining
-  aren't shared until you tap "Share my earlier entries" on the Team screen.
-- **Mine / Team** on Home: Team shows everyone's shared entries, with the author's name.
-  Teammates' full photos and voice notes download when opened, then work offline too.
-- **Export → Whole team:** one ZIP with everyone's images, voice notes and a CSV.
+- **Sign in** on the Team screen with Google. Saving entries never needs a sign-in.
+  Signing in on a new phone brings your teams back.
+- **Create a team:** you get a code like `ABC234` and an invite link.
+  **Join:** tap the invite link, or Team → type the code.
+- **Several teams:** up to 20. The Team screen lists them; tap one for its code, invite,
+  members and Leave.
+- **Share with:** every entry has *Only on this phone / Team A / Team B*. New entries start
+  with the team you used last. Changing it moves the entry to the other team.
+  Entries saved before joining a team can be shared from the Team screen.
+- **Mine / Team** on Home: Team shows the shared entries of one team (pick which, if you're
+  in several), with each author's name. Teammates' photos download when opened, then work offline.
+- **Export → Whole team:** one ZIP with that team's images, voice notes and a CSV.
 - **Owner:** can remove members, delete any team entry, and make a new code (old code and
   links stop working). If the owner leaves, the longest-standing member becomes owner.
   If the last member leaves, the team and all its shared entries are deleted.
-- **One team per person** at a time.
+- **Pictures are uploaded as WebP**, max 3 MB each. Chrome/Android make WebP themselves;
+  iPhones (Safari can't) use Google's libwebp encoder bundled in `js/vendor/webp/`.
+  The server also refuses any file over 3 MB.
 
 ### Privacy and security
 
-- Only entries with "Share with team" on are uploaded (with your name), to your
-  team's private storage. Everything else never leaves the phone.
+- Only entries shared with a team are uploaded (with your PitSide name), to that team's
+  private storage. Everything else never leaves the phone.
+- Supabase keeps your Google name and email (that's how sign-in works). Teammates see
+  your PitSide name, not your email.
 - The rules in `supabase/schema.sql` (Row Level Security) are enforced by the database:
   only members can see a team, its entries and its files; you can only add or edit your
-  own entries; only the owner can remove people. 10 wrong codes in an hour blocks that
-  phone for the hour, so codes can't easily be guessed.
+  own entries; only the owner can remove people; anonymous accounts can't create, join or
+  upload. 10 wrong codes in an hour blocks that account for the hour.
 - The publishable key in `js/config.js` is meant to be public; the security rules protect the data.
 
 ---
@@ -150,11 +174,16 @@ js/recorder.js          Voice note: MediaRecorder, hold-to-record or tap-to-star
 js/render.js            Draws one entry as a 1920×1080 or 1080×1080 PNG for Slides.
 js/zip.js               A small ZIP writer (headers + CRC-32 checksums), so no library is needed.
 js/exporter.js          File names, entries.csv, building the ZIP, Share or Download.
-js/gallery.js           The photo list on the detail screens, with Download buttons.
+js/gallery.js           The photo list on the detail screens, with Full screen and Download.
+js/viewer.js            Full-screen photo viewer with pinch / double-tap / button zoom.
 js/config.js            Supabase Project URL + publishable key (empty = no team features).
-js/cloud.js             Talks to Supabase with plain fetch(): sign-in, database, file storage.
-js/team.js              Which team I'm in; create, join, leave, members, new code.
-js/sync.js              Uploads shared entries, removes deleted/unshared ones, downloads the team's.
+js/cloud.js             Talks to Supabase with plain fetch(): Google sign-in (PKCE), database,
+                        file storage.
+js/team.js              My teams; create, join, leave, members, new code, sign out.
+js/sync.js              Uploads shared entries to their team, removes moved/deleted ones,
+                        downloads each team's entries.
+js/webp.js              Makes pictures WebP (max 3 MB) right before they're uploaded.
+js/vendor/webp/         Google's libwebp encoder (WebAssembly), used on iPhones only.
 js/screens/*.js         One file per screen: welcome, home, capture, saved, detail, export,
                         settings, team, teamEntry.
 ```
@@ -204,11 +233,14 @@ private storage bucket `entry-files` with files at `team/user/entry/file`.
 ## Small decisions worth knowing
 
 - **No JSZip / idb / Supabase library:** I wrote a small ZIP writer (`zip.js`), IndexedDB
-  helper (`db.js`) and Supabase client (`cloud.js`) instead, so there is nothing to download
-  or bundle and every line is explainable.
-- **No email sign-in:** Supabase's free email sender only reaches the project owner (2 emails
-  an hour), and on iPhone an emailed link opens Safari instead of the installed app. So each
-  phone signs in anonymously and the team code is the "key".
+  helper (`db.js`) and Supabase client (`cloud.js`) instead, so every line is explainable.
+  The one bundled library is the WebP encoder, because iPhones can't make WebP any other way.
+- **Google sign-in, not email:** Supabase's free email sender only reaches the project owner
+  (2 emails an hour). Google sign-in needs no email sending, works across phones, and stops
+  throwaway accounts. (v1.1–1.2 used anonymous sign-in; those phones are upgraded to their
+  Google account on first sign-in, keeping their teams.)
+- **Sign-in uses PKCE:** the app keeps a random secret on the phone and only a hash of it
+  goes to Google, so an intercepted sign-in code is useless to anyone else.
 - **Thumbnail field:** each entry also stores a small thumbnail. Showing dozens of
   full-size photos in the list could run a phone out of memory.
 - **Design stage memory:** a new entry has no stage until you tap "Add design stage";

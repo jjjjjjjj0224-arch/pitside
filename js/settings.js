@@ -20,6 +20,7 @@ const DEFAULTS = {
   author: '',
   defaultType: 'build',
   lastStage: null,
+  lastShareTeam: null,     // the team the last entry was shared with
   export: {
     build: exportDefaults('#C2410C', false),        // orange
     competition: exportDefaults('#B91C1C', true),   // red

@@ -8,7 +8,9 @@
 --   * You can only add or edit entries as yourself, in your own team.
 --   * You can delete your own entries; the team owner can delete any entry and remove members.
 --   * Joining needs the team's 6-character code. 10 wrong codes in an hour = blocked for that hour.
---   * Each person can be in one team at a time.
+--   * A person can be in several teams (up to 20).
+--   * Creating/joining teams and adding entries or files needs a real (Google) sign-in,
+--     not an anonymous one.
 
 -- =====================================================================
 -- Tables
@@ -27,9 +29,11 @@ create table if not exists public.team_members (
   display_name text not null check (char_length(display_name) between 1 and 60),
   role         text not null default 'member' check (role in ('owner', 'member')),
   joined_at    timestamptz not null default now(),
-  primary key (team_id, user_id),
-  unique (user_id)                      -- one team per person
+  primary key (team_id, user_id)
 );
+-- v1.3: people can be in several teams (older versions allowed only one).
+alter table public.team_members drop constraint if exists team_members_user_id_key;
+create index if not exists team_members_user on public.team_members (user_id);
 
 -- One shared entry. The id is the same id the entry has on the phone.
 -- Photos, drawings, thumbnails and voice notes live in Storage; these are their paths.
@@ -93,6 +97,15 @@ as $$
   );
 $$;
 
+-- Signed in with a real account (Google), not an anonymous one.
+create or replace function public.is_full_user()
+returns boolean
+language sql stable set search_path = ''
+as $$
+  select auth.uid() is not null
+     and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, false) = false;
+$$;
+
 -- =====================================================================
 -- Row Level Security
 -- =====================================================================
@@ -130,13 +143,13 @@ create policy "Members see team entries" on public.entries
 drop policy if exists "Members add their own entries" on public.entries;
 create policy "Members add their own entries" on public.entries
   for insert to authenticated
-  with check (user_id = auth.uid() and public.is_team_member(team_id::text));
+  with check (user_id = auth.uid() and public.is_full_user() and public.is_team_member(team_id::text));
 
 drop policy if exists "Authors edit their own entries" on public.entries;
 create policy "Authors edit their own entries" on public.entries
   for update to authenticated
   using (user_id = auth.uid())
-  with check (user_id = auth.uid() and public.is_team_member(team_id::text));
+  with check (user_id = auth.uid() and public.is_full_user() and public.is_team_member(team_id::text));
 
 drop policy if exists "Authors or owner delete entries" on public.entries;
 create policy "Authors or owner delete entries" on public.entries
@@ -171,9 +184,9 @@ as $$
 declare
   new_team public.teams;
 begin
-  if auth.uid() is null then raise exception 'not_signed_in'; end if;
-  if exists (select 1 from public.team_members where user_id = auth.uid()) then
-    raise exception 'already_in_team';
+  if not public.is_full_user() then raise exception 'need_google_sign_in'; end if;
+  if (select count(*) from public.team_members where user_id = auth.uid()) >= 20 then
+    raise exception 'too_many_teams';
   end if;
 
   for attempt in 1..5 loop
@@ -203,7 +216,7 @@ declare
   found_team public.teams;
   recent_failures int;
 begin
-  if auth.uid() is null then raise exception 'not_signed_in'; end if;
+  if not public.is_full_user() then raise exception 'need_google_sign_in'; end if;
 
   select count(*) into recent_failures from public.join_attempts
   where user_id = auth.uid() and at > now() - interval '1 hour';
@@ -215,8 +228,9 @@ begin
     return null;
   end if;
 
-  if exists (select 1 from public.team_members where user_id = auth.uid() and team_id <> found_team.id) then
-    raise exception 'already_in_team';
+  if not exists (select 1 from public.team_members where user_id = auth.uid() and team_id = found_team.id)
+     and (select count(*) from public.team_members where user_id = auth.uid()) >= 20 then
+    raise exception 'too_many_teams';
   end if;
 
   insert into public.team_members (team_id, user_id, display_name)
@@ -226,9 +240,10 @@ begin
 end;
 $$;
 
--- Leave your team. If the owner leaves, the longest-standing member becomes owner.
+-- Leave one of your teams. If the owner leaves, the longest-standing member becomes owner.
 -- If the last person leaves, the team and its shared entries are deleted.
-create or replace function public.leave_team()
+drop function if exists public.leave_team();    -- older version (one team per person)
+create or replace function public.leave_team(team uuid)
 returns void
 language plpgsql security definer set search_path = ''
 as $$
@@ -236,7 +251,7 @@ declare
   me public.team_members;
   next_owner uuid;
 begin
-  select * into me from public.team_members where user_id = auth.uid();
+  select * into me from public.team_members where user_id = auth.uid() and team_id = team;
   if not found then return; end if;
 
   delete from public.team_members where team_id = me.team_id and user_id = me.user_id;
@@ -276,7 +291,7 @@ begin
 end;
 $$;
 
--- Change the name teammates see for you.
+-- Change the name teammates see for you (in all your teams).
 create or replace function public.set_display_name(member_name text)
 returns void
 language plpgsql security definer set search_path = ''
@@ -289,13 +304,13 @@ $$;
 -- Only signed-in users may call the team actions.
 revoke execute on function public.create_team(text, text)  from public, anon;
 revoke execute on function public.join_team(text, text)    from public, anon;
-revoke execute on function public.leave_team()             from public, anon;
+revoke execute on function public.leave_team(uuid)         from public, anon;
 revoke execute on function public.reset_join_code(uuid)    from public, anon;
 revoke execute on function public.set_display_name(text)   from public, anon;
 revoke execute on function public.make_join_code()         from public, anon, authenticated;
 grant  execute on function public.create_team(text, text)  to authenticated;
 grant  execute on function public.join_team(text, text)    to authenticated;
-grant  execute on function public.leave_team()             to authenticated;
+grant  execute on function public.leave_team(uuid)         to authenticated;
 grant  execute on function public.reset_join_code(uuid)    to authenticated;
 grant  execute on function public.set_display_name(text)   to authenticated;
 
@@ -303,10 +318,14 @@ grant  execute on function public.set_display_name(text)   to authenticated;
 -- File storage: private bucket, files at  <team id>/<user id>/<entry id>/<file>
 -- =====================================================================
 
+-- v1.3: pictures are uploaded as WebP; every file is at most 3 MB.
+-- (jpeg/png stay allowed so files from older versions still work.)
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('entry-files', 'entry-files', false, 10485760,
-        array['image/jpeg', 'image/png', 'audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/aac', 'audio/x-m4a'])
-on conflict (id) do nothing;
+values ('entry-files', 'entry-files', false, 3145728,
+        array['image/webp', 'image/jpeg', 'image/png', 'audio/webm', 'audio/mp4', 'audio/ogg', 'audio/mpeg', 'audio/aac', 'audio/x-m4a'])
+on conflict (id) do update
+  set file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "PitSide: members read team files" on storage.objects;
 create policy "PitSide: members read team files" on storage.objects
@@ -318,6 +337,7 @@ create policy "PitSide: members upload to their own folder" on storage.objects
   for insert to authenticated
   with check (
     bucket_id = 'entry-files'
+    and public.is_full_user()
     and public.is_team_member((storage.foldername(name))[1])
     and (storage.foldername(name))[2] = auth.uid()::text
   );
