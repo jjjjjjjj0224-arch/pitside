@@ -1,1 +1,5 @@
 .claude/
+supabase/config.toml
+supabase/.temp/
+supabase/.branches/
+supabase/.gitignore
