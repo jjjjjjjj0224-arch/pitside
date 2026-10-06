@@ -70,6 +70,10 @@ once. It adds the `photos` column and keeps all existing data.
 
 ## Updating the app after you change code
 
+Phones check for a new version whenever PitSide is opened or brought back to the front.
+When one has downloaded, a **"New version of PitSide ready – Reload"** bar appears (it never
+reloads by itself, so nothing being typed is lost). Settings shows the version at the bottom.
+
 The service worker serves the cached copy first (that's what makes it work offline).
 When you change any file, open `sw.js` and bump `VERSION` (e.g. `pitside-v1.1.1`).
 Phones download the new files in the background and use them the next time the app opens.
