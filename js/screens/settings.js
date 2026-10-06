@@ -78,6 +78,7 @@ export async function renderSettings(el) {
           Entries you share with a team are uploaded there (pictures as WebP), and only that team's members
           can see them. Entries that aren't shared never leave the phone, unless you tap Share or Export.</p>
         <p class="hint">Deleting the app or clearing this browser's website data also deletes your entries, so export them regularly.</p>
+        <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
       <p class="hint center">PitSide v1.3</p>
