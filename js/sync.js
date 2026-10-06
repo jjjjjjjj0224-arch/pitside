@@ -65,7 +65,7 @@ export async function countPending() {
   const myTeams = new Set(getTeams().map((t) => t.teamId));
   if (!myTeams.size) return 0;
   const entries = await getAllEntries();
-  const deletes = (await readKey('pendingDeletes')) || [];
+  const deletes = ((await readKey('pendingDeletes')) || []).filter((d) => !d.teamId || myTeams.has(d.teamId));
   return entries.filter((e) => needsUpload(e, myTeams) || needsRemoving(e, myTeams)).length + deletes.length;
 }
 
@@ -104,7 +104,7 @@ async function runSync() {
   try {
     const teams = await refreshTeams();
     const myTeams = new Map(teams.map((t) => [t.teamId, t]));
-    await pushDeletes();
+    await pushDeletes(myTeams);
     for (const e of await getAllEntries()) {
       if (needsRemoving(e, myTeams)) await removeFromTeam(e);
       const current = await getEntry(e.id);
@@ -212,14 +212,15 @@ export async function queueRemoteDelete(entry) {
   syncSoon();
 }
 
-async function pushDeletes() {
-  let list = (await readKey('pendingDeletes')) || [];
-  while (list.length) {
-    const item = list[0];
+// Only deletes for teams of the account signed in now; others wait (e.g. after
+// switching Google accounts, until the old account signs in again).
+async function pushDeletes(myTeams) {
+  const list = (await readKey('pendingDeletes')) || [];
+  for (const item of list.filter((d) => !d.teamId || myTeams.has(d.teamId))) {
     await table.remove('entries', `id=eq.${item.id}`);
     await files.remove(item.paths);      // if this fails, the item stays queued for next time
-    list = list.slice(1);
-    await writeKey('pendingDeletes', list);
+    const left = ((await readKey('pendingDeletes')) || []).filter((d) => d.id !== item.id);
+    await writeKey('pendingDeletes', left);
   }
 }
 

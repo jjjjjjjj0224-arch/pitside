@@ -123,8 +123,10 @@ export const browser = { go: (url) => window.location.assign(url) };
 // returnHash: the screen to show after signing in, e.g. '#/team' or '#/join/ABC234'.
 export async function startGoogleSignIn(returnHash = '#/team') {
   const { verifier, challenge } = await makePkce();
+  // prompt=select_account: Google always shows the account picker, so you can
+  // switch to a different Google account instead of being signed straight back in.
   const params = `provider=google&redirect_to=${encodeURIComponent(appAddress())}`
-    + `&code_challenge=${challenge}&code_challenge_method=s256`;
+    + `&code_challenge=${challenge}&code_challenge_method=s256&prompt=select_account`;
   const current = await loadSession();
 
   let url;

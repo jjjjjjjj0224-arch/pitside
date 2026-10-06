@@ -7,7 +7,7 @@ import { goBack } from '../router.js';
 import { renderEntryImage } from '../render.js';
 import { canvasToBlob } from '../image.js';
 import { audioFileName } from '../exporter.js';
-import { isCloudConfigured } from '../cloud.js';
+import { isCloudConfigured, getAccount } from '../cloud.js';
 import { getTeams, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
 
@@ -22,6 +22,7 @@ const FIELD_LABELS = [
 export async function renderSettings(el) {
   let settings = getSettings();
   let entries = await getAllEntries();
+  const account = isCloudConfigured() ? await getAccount() : null;
   const urls = new UrlBag();
 
   el.innerHTML = `
@@ -41,11 +42,14 @@ export async function renderSettings(el) {
 
       ${isCloudConfigured() ? `
       <section class="card">
-        <h2 class="section-title">Team</h2>
+        <h2 class="section-title">Team and account</h2>
+        <p>${account && !account.anonymous
+          ? `Signed in with Google as <strong>${esc(account.email)}</strong>.`
+          : 'Not signed in. Teams need a Google sign-in.'}</p>
         <p>${getTeams().length
           ? `You're in <strong>${esc(getTeams().map((t) => t.teamName).join(', '))}</strong>.`
-          : 'Not in a team yet. Sign in with Google to join or create one.'}</p>
-        <a class="btn btn-secondary btn-block" href="#/team">${getTeams().length ? 'Your teams' : 'Join or create a team'}</a>
+          : 'Not in a team yet.'}</p>
+        <a class="btn btn-secondary btn-block" href="#/team">${account && !account.anonymous ? 'Teams, sign out or switch account' : 'Sign in with Google'}</a>
       </section>` : ''}
 
       <section class="card">

@@ -14,6 +14,7 @@ import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, Url
 // "Shared with VEX 1234A" / "Waiting to upload to VEX 1234A" / "Only on this phone"
 function shareStatus(entry, teams) {
   const team = teams.find((t) => t.teamId === entry.shareTeam);
+  if (!team && typeof entry.shareTeam === 'string') return 'Shared with a team of another Google account (sign in with it to see)';
   if (!team) return 'Only on this phone (not shared)';
   if (entry.sync === 'synced' && entry.remote && entry.remote.teamId === team.teamId) return `Shared with ${team.teamName}`;
   return `Waiting to upload to ${team.teamName} (uploads when online)`;

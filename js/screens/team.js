@@ -129,10 +129,14 @@ export async function renderTeams(el, codeFromLink) {
       <main class="page team">
         <section class="card account-card">
           <div>
+            <span class="label-small">Signed in with Google</span>
             <strong>${esc(account.name || getSettings().author)}</strong>
             <span class="muted account-email">${esc(account.email)}</span>
           </div>
-          <button type="button" class="btn btn-ghost btn-small" data-act="sign-out">Sign out</button>
+          <div class="account-buttons">
+            <button type="button" class="btn btn-secondary btn-small" data-act="switch-account">Switch account</button>
+            <button type="button" class="btn btn-ghost btn-small" data-act="sign-out">Sign out</button>
+          </div>
         </section>
 
         <section class="card">
@@ -220,6 +224,21 @@ export async function renderTeams(el, codeFromLink) {
       await signOut();
       toast('Signed out');
       await draw();
+    });
+
+    // Sign out, then straight to Google's account picker to choose another account.
+    $('[data-act="switch-account"]').addEventListener('click', async (e) => {
+      const button = e.currentTarget;
+      const ok = await confirmDialog({
+        title: 'Switch Google account?',
+        message: `You'll be signed out of ${account.email} and can pick another account. Your entries stay on this phone; anything waiting to upload to ${account.email}'s teams waits until that account signs in again.`,
+        confirmText: 'Switch account',
+      });
+      if (!ok) return;
+      run(button, 'Opening Google…', async () => {
+        await signOut();
+        await startGoogleSignIn('#/team');
+      });
     });
 
     $('[data-act="sync"]').addEventListener('click', (e) => {
