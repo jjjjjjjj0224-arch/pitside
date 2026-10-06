@@ -10,6 +10,29 @@ import { audioFileName } from '../exporter.js';
 import { isCloudConfigured, getAccount } from '../cloud.js';
 import { getTeams, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
+import { THEMES, applyTheme, customTheme, contrast } from '../themes.js';
+
+// A small picture of a theme: page background, a card with two text lines, an accent button.
+// With a second theme (Auto), the tile is split diagonally: light / dark.
+function themePreviewHtml(theme, second) {
+  const part = (t) => `
+    <span class="tp-page" style="background:${t.c[0]}">
+      <span class="tp-card" style="background:${t.c[1]};border-color:${t.c[4]}">
+        <span class="tp-line" style="background:${t.c[2]}"></span>
+        <span class="tp-line short" style="background:${t.c[3]}"></span>
+        <span class="tp-btn" style="background:${t.c[5]}"></span>
+      </span>
+    </span>`;
+  return `<span class="theme-preview${second ? ' split' : ''}" aria-hidden="true">${part(theme)}${second ? part(second) : ''}</span>`;
+}
+
+function themeButtonHtml(id, name, theme, second) {
+  return `
+    <button type="button" class="theme-btn" data-theme-id="${id}" aria-pressed="false">
+      ${themePreviewHtml(theme, second)}
+      <span class="theme-name">${esc(name)}</span>
+    </button>`;
+}
 
 const FIELD_LABELS = [
   ['caption', 'Caption'],
@@ -61,6 +84,27 @@ export async function renderSettings(el) {
       </section>
 
       <section class="card">
+        <h2 class="section-title" id="theme-label">Theme</h2>
+        <p class="hint">Changes the app's colors. Exported notebook images always stay white.</p>
+        <div class="theme-grid" role="group" aria-labelledby="theme-label">
+          ${themeButtonHtml('auto', 'Auto (match phone)', THEMES.find((t) => t.id === 'classic'), THEMES.find((t) => t.id === 'dark'))}
+          ${THEMES.map((t) => themeButtonHtml(t.id, t.name, t)).join('')}
+          ${themeButtonHtml('custom', 'Custom', customTheme(settings.customTheme))}
+        </div>
+        <div class="custom-theme" hidden>
+          <p class="label-small">Your colors</p>
+          <div class="custom-colors">
+            ${[['bg', 'Background'], ['surface', 'Cards'], ['text', 'Text'], ['accent', 'Accent']].map(([key, label]) => `
+              <label class="color-field">
+                <input type="color" data-custom="${key}" value="${esc(settings.customTheme[key])}">
+                <span>${label}</span>
+              </label>`).join('')}
+          </div>
+          <p class="form-error contrast-warning" role="status" hidden>Text may be hard to read with these colors. Try a darker or lighter text color.</p>
+        </div>
+      </section>
+
+      <section class="card">
         <h2 class="section-title">Export options</h2>
         <p class="hint">Each entry type has its own image style.</p>
         ${TYPES.map((t) => exportOptionsHtml(t)).join('')}
@@ -85,7 +129,7 @@ export async function renderSettings(el) {
         <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
-      <p class="hint center">PitSide v1.3</p>
+      <p class="hint center">PitSide v1.4</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -106,6 +150,36 @@ export async function renderSettings(el) {
     // Teammates see the new name too (if online; otherwise it stays as before).
     if (getTeams().length) renameMe(name).catch((err) => console.warn('Team name not updated', err));
   });
+
+  // ---- Theme ----
+  function showTheme() {
+    el.querySelectorAll('[data-theme-id]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeId === settings.theme)));
+    $('.custom-theme').hidden = settings.theme !== 'custom';
+    const c = settings.customTheme;
+    $('.contrast-warning').hidden = Math.min(contrast(c.text, c.bg), contrast(c.text, c.surface)) >= 4.5;
+  }
+  $('.theme-grid').addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-theme-id]');
+    if (!btn) return;
+    applyTheme(btn.dataset.themeId, settings.customTheme);      // instant
+    settings = await saveSettings({ theme: btn.dataset.themeId });
+    showTheme();
+  });
+  el.querySelectorAll('[data-custom]').forEach((input) => {
+    // Live while dragging the color picker; saved when the picker closes.
+    input.addEventListener('input', () => {
+      const custom = { ...settings.customTheme, [input.dataset.custom]: input.value };
+      settings = { ...settings, customTheme: custom };
+      applyTheme('custom', custom);
+      const tile = el.querySelector('[data-theme-id="custom"] .theme-preview');
+      tile.outerHTML = themePreviewHtml(customTheme(custom));
+      showTheme();
+    });
+    input.addEventListener('change', async () => {
+      settings = await saveSettings({ theme: 'custom', customTheme: settings.customTheme });
+    });
+  });
+  showTheme();
 
   // ---- Default type ----
   function showDefaultType() {

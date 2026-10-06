@@ -8,6 +8,7 @@ import { loadTeams, getTeams, refreshTeams } from './team.js';
 import { isCloudConfigured, finishGoogleSignIn, getAccount } from './cloud.js';
 import { syncSoon } from './sync.js';
 import { toast } from './ui.js';
+import { applyTheme, watchAutoTheme } from './themes.js';
 import { renderWelcome } from './screens/welcome.js';
 import { renderHome } from './screens/home.js';
 import { renderCapture } from './screens/capture.js';
@@ -56,6 +57,9 @@ async function start() {
   window.addEventListener('offline', updateOfflineNote);
 
   await loadSettings();
+  // Color theme (index.html already applied the saved one; this keeps it in sync).
+  applyTheme(getSettings().theme, getSettings().customTheme);
+  watchAutoTheme(getSettings);
   await loadTeams();
 
   // Coming back from the Google sign-in page? Finish signing in, then

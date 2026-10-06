@@ -21,6 +21,8 @@ const DEFAULTS = {
   defaultType: 'build',
   lastStage: null,
   lastShareTeam: null,     // the team the last entry was shared with
+  theme: 'classic',        // color theme id (js/themes.js), 'auto' or 'custom'
+  customTheme: { bg: '#1B1D22', surface: '#25282F', text: '#F1F2F4', accent: '#F59E0B' },
   export: {
     build: exportDefaults('#C2410C', false),        // orange
     competition: exportDefaults('#B91C1C', true),   // red
