@@ -15,9 +15,11 @@ import { readKey, writeKey, deleteKey } from './db.js';
 
 export const BOX_KINDS = [
   { kind: 'photo', label: 'Photo' },
+  { kind: 'title', label: 'Title (stage or type)' },
   { kind: 'label', label: 'Entry type' },
   { kind: 'datetime', label: 'Date and time' },
   { kind: 'date', label: 'Date only' },
+  { kind: 'shortDate', label: 'Date (07/09/2025)' },
   { kind: 'author', label: 'Author' },
   { kind: 'stage', label: 'Design stage' },
   { kind: 'match', label: 'Match number' },
@@ -28,11 +30,13 @@ export const BOX_KINDS = [
 export const kindLabel = (kind) => (BOX_KINDS.find((k) => k.kind === kind) || { label: kind }).label;
 
 // Text sizes, in pixels on a page 1920 pixels wide (scaled for other sizes).
-export const TEXT_SIZES = { S: 26, M: 36, L: 48, XL: 64 };
+export const TEXT_SIZES = { S: 26, M: 36, L: 48, XL: 64, XXL: 120 };
 export const FONTS = {
   sans: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
   serif: 'Georgia, "Times New Roman", serif',
   mono: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+  // Handwriting, for titles. Uses whichever handwriting font the phone has.
+  hand: '"Caveat", "Ink Free", "Segoe Print", "Bradley Hand", Noteworthy, "Comic Sans MS", cursive',
 };
 
 const key = (type) => `template:${type}`;
@@ -96,4 +100,37 @@ export function sampleCoverColor(ctx, box, width, height) {
   }
   const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0].split(',').map(Number);
   return `#${best.map((v) => Math.min(255, v).toString(16).padStart(2, '0')).join('')}`;
+}
+
+// ---- Template files (to share a template with teammates or another phone) ----
+// A .pitside-template.json file: the boxes plus the sample page as a data: URL.
+
+const FILE_TAG = 'pitside-template';
+
+export async function templateToFile(template, name) {
+  const page = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(template.page);
+  });
+  const { type, width, height, source, boxes } = template;
+  const json = JSON.stringify({ format: FILE_TAG, version: 1, type, width, height, source, boxes, page });
+  return new File([json], `${name}.pitside-template.json`, { type: 'application/json' });
+}
+
+export const isTemplateFile = (file) => /\.json$/i.test(file.name) || file.type === 'application/json';
+
+// Read a template file for entry type `type`. Throws if it isn't one.
+export async function templateFromFile(file, type) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { data = null; }
+  if (!data || data.format !== FILE_TAG || !Array.isArray(data.boxes) || !/^data:image\//.test(data.page || '')) {
+    throw new Error('Not a PitSide template file');
+  }
+  const page = await (await fetch(data.page)).blob();
+  const boxes = data.boxes
+    .filter((b) => BOX_KINDS.some((k) => k.kind === b.kind))
+    .map((b) => ({ ...newBox(b.kind), ...b, id: `b${nextId++}` }));
+  return { type, page, width: data.width, height: data.height, source: data.source || file.name, boxes };
 }

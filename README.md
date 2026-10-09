@@ -162,6 +162,9 @@ Settings → Export options → (Build / Competition / Programming) → **Set up
    page color.
 4. Preview, then **Save template**. That type's export now uses "My notebook's layout".
 
+To give teammates the same layout: **Share this template with a teammate** makes a
+`.pitside-template.json` file; they open it with **Choose notebook PDF** and tap Save.
+
 All on the phone: the PDF is read by the bundled pdf.js (`js/vendor/pdfjs`) and never
 uploaded. Only the chosen page is kept, as a picture in IndexedDB (key `template:<type>`).
 

@@ -212,8 +212,11 @@ export function templateBoxText(kind, entry, audioFileName, photoIndex, photoCou
   const d = new Date(entry.createdAt);
   switch (kind) {
     case 'label': return (TYPE_LABELS[entry.type] || entry.type).toUpperCase();
+    // Page title like the notebook's "Build - ...": the design stage, or else the entry type.
+    case 'title': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : (TYPE_LABELS[entry.type] || entry.type);
     case 'datetime': return longDateTime(entry.createdAt);
     case 'date': return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    case 'shortDate': return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
     case 'author': return entry.author || '';
     case 'stage': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : '';
     case 'match': return entry.matchNumber || '';
@@ -299,8 +302,9 @@ function drawTemplateText(ctx, text, box, b, scale) {
   ctx.textBaseline = 'top';
   ctx.textAlign = b.align === 'center' ? 'center' : b.align === 'right' ? 'right' : 'left';
   const x = b.align === 'center' ? box.x + box.w / 2 : b.align === 'right' ? box.x + box.w : box.x;
-  // Single short lines sit in the middle of the box's height; longer text starts at the top.
-  const top = lines.length === 1 ? box.y + (box.h - size) / 2 : box.y;
+  // In a one-line box (title, date...) the text sits in the middle of its height;
+  // in a tall box (caption) text starts at the top.
+  const top = lines.length === 1 && box.h < size * 2.6 ? box.y + (box.h - size) / 2 : box.y;
   lines.forEach((line, i) => ctx.fillText(line, x, top + i * lineH));
   ctx.textAlign = 'left';
 }

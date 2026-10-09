@@ -10,9 +10,10 @@ import { getSettings, saveExportOptions } from '../settings.js';
 import { openPdf } from '../pdfpages.js';
 import { loadImage, canvasToBlob } from '../image.js';
 import { renderTemplateImage } from '../render.js';
-import { audioFileName } from '../exporter.js';
+import { audioFileName, shareOrDownload } from '../exporter.js';
 import {
   BOX_KINDS, kindLabel, TEXT_SIZES, getTemplate, saveTemplate, deleteTemplate, newBox, sampleCoverColor,
+  templateToFile, templateFromFile, isTemplateFile,
 } from '../templates.js';
 import { TYPE_LABELS, esc, confirmDialog, toast, UrlBag } from '../ui.js';
 
@@ -52,9 +53,9 @@ export async function renderTemplateEditor(el, type) {
         <section class="card">
           <h2 class="section-title">1. Your notebook</h2>
           <p>Upload your engineering notebook as a <strong>PDF</strong> (Google Slides: File &gt; Download &gt; PDF).
-            You can also use a picture of one page. It stays on this phone; nothing is uploaded.</p>
+            You can also use a picture of one page, or a template file a teammate shared. It stays on this phone; nothing is uploaded.</p>
           <button type="button" class="btn btn-primary btn-block btn-lg" data-act="choose-file">Choose notebook PDF</button>
-          <input type="file" accept="application/pdf,image/*" data-input="notebook" hidden>
+          <input type="file" accept="application/pdf,image/*,application/json,.json" data-input="notebook" hidden>
           <p class="form-error" role="alert" hidden></p>
           ${tpl ? '<button type="button" class="btn btn-secondary btn-block" data-act="back-to-editor">Keep the current sample page</button>' : ''}
         </section>
@@ -83,6 +84,16 @@ export async function renderTemplateEditor(el, type) {
       btn.disabled = true;
       btn.textContent = 'Opening…';
       try {
+        if (isTemplateFile(file)) {
+          // A ready-made template (boxes already placed): straight to the editor.
+          tpl = await templateFromFile(file, type);
+          pagePixels = null;
+          dirty = true;
+          if (pdf) { pdf.close(); pdf = null; }
+          await drawEditor();
+          toast('Template loaded. Check the preview, then Save.');
+          return;
+        }
         if (file.type.startsWith('image/')) {
           await usePage(await imageToPage(file), file.name);
           return;
@@ -212,6 +223,7 @@ export async function renderTemplateEditor(el, type) {
           <button type="button" class="btn btn-primary btn-lg" data-act="save">Save template</button>
           ${saved ? '<button type="button" class="btn btn-danger" data-act="remove">Remove</button>' : ''}
         </div>
+        <button type="button" class="btn btn-ghost btn-block" data-act="share-file">Share this template with a teammate</button>
       </main>`;
     wireCommon();
     wireEditor();
@@ -263,7 +275,7 @@ export async function renderTemplateEditor(el, type) {
         </div>
         <div class="prop-group" role="group" aria-label="Font">
           <span class="label-small">Font</span>
-          ${[['sans', 'Sans'], ['serif', 'Serif'], ['mono', 'Mono']].map(([f, n]) => `<button type="button" class="chip" data-font="${f}" aria-pressed="${b.font === f}">${n}</button>`).join('')}
+          ${[['sans', 'Sans'], ['serif', 'Serif'], ['mono', 'Mono'], ['hand', 'Hand']].map(([f, n]) => `<button type="button" class="chip" data-font="${f}" aria-pressed="${b.font === f}">${n}</button>`).join('')}
         </div>
         <div class="prop-group" role="group" aria-label="Alignment">
           <span class="label-small">Align</span>
@@ -420,6 +432,15 @@ export async function renderTemplateEditor(el, type) {
       dirty = false;
       toast(`${TYPE_LABELS[type]} template saved. Exports now use your notebook layout.`);
       goBack('#/settings');
+    });
+
+    // A file teammates open with "Choose notebook PDF" to get the same template.
+    $('[data-act="share-file"]').addEventListener('click', async () => {
+      const name = `${getSettings().author || 'PitSide'} ${TYPE_LABELS[type]}`.replace(/[^\w -]+/g, '').trim();
+      const file = await templateToFile(tpl, name);
+      if (await shareOrDownload(file, `${TYPE_LABELS[type]} template`, { preferDownload: true }) === 'retry') {
+        toast('Ready. Tap Share again.');
+      }
     });
 
     const removeBtn = $('[data-act="remove"]');
