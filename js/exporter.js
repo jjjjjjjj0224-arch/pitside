@@ -3,7 +3,7 @@
 
 import { renderEntryImage } from './render.js';
 import { makeZip } from './zip.js';
-import { photosOf, flattenPhoto } from './image.js';
+import { photosOf, flattenPhoto, loadImage, canvasToBlob } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -37,16 +37,33 @@ export function imageFileNames(entry, base = baseName(entry)) {
   return Array.from({ length: n }, (_, i) => `${base}_photo${i + 1}.png`);
 }
 
+// Which format an entry is drawn in. format: 'auto' (that entry type's own format,
+// from Settings), 'standard' (PitSide layout) or a notebook format id.
+export function formatFor(entry, settings, format = 'auto') {
+  return format === 'auto' ? settings.export[entry.type].format : format;
+}
+
 // Make all of an entry's export images (one per photo) as PNG files.
-export async function renderEntryImages(entry, settings, base = baseName(entry)) {
+export async function renderEntryImages(entry, settings, base = baseName(entry), format = 'auto') {
   const names = imageFileNames(entry, base);
   const audioName = audioFileName(entry, base);
   const images = [];
   for (let i = 0; i < names.length; i++) {
-    const png = await renderEntryImage(entry, settings.export[entry.type], audioName, i);
+    const png = await renderEntryImage(entry, settings.export[entry.type], audioName, i, formatFor(entry, settings, format));
     images.push(new File([png], names[i], { type: 'image/png' }));
   }
   return images;
+}
+
+// A small JPEG of an entry's first export image (for picking a format).
+export async function previewImage(entry, settings, format = 'auto', width = 480) {
+  const png = await renderEntryImage(entry, settings.export[entry.type], audioFileName(entry), 0, formatFor(entry, settings, format));
+  const img = await loadImage(png);
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = Math.round((img.naturalHeight / img.naturalWidth) * width);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return canvasToBlob(c, 'image/jpeg', 0.85);
 }
 
 // Give every entry a unique base name. Two entries of the same type in the
@@ -97,7 +114,7 @@ function buildCsv(entries, names, includePhotos) {
 // Build the export ZIP: one PNG per photo of each entry, each voice note, entries.csv,
 // and (includePhotos) a photos/ folder with the full-size photos for the notebook.
 // onProgress(done, total) is called as each entry's images are made.
-export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true } = {}) {
+export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true, format = 'auto' } = {}) {
   const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
@@ -105,7 +122,7 @@ export async function buildExportZip(entries, settings, onProgress = () => {}, {
     const e = sorted[i];
     const base = names.get(e.id);
     const audioName = audioFileName(e, base);
-    for (const image of await renderEntryImages(e, settings, base)) {
+    for (const image of await renderEntryImages(e, settings, base, format)) {
       files.push({ name: image.name, data: image, date: new Date(e.createdAt) });
     }
     if (e.audio) files.push({ name: audioName, data: e.audio, date: new Date(e.createdAt) });

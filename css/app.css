@@ -492,6 +492,36 @@ h1:focus { outline: none; }
 .accent-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .accent-swatch { width: 22px; height: 22px; border-radius: 6px; flex: none; }
 .export-preview { width: 100%; border: 1px solid var(--border); border-radius: 8px; margin: 6px 0 12px; background: #fff; }
+
+/* Export: format cards with previews (scroll sideways) */
+.format-row {
+  display: flex; gap: 10px; overflow-x: auto; padding: 4px 2px 10px;
+  scroll-snap-type: x proximity; -webkit-overflow-scrolling: touch;
+}
+.format-card {
+  flex: 0 0 148px; scroll-snap-align: start; display: flex; flex-direction: column; gap: 6px; align-items: stretch;
+  padding: 6px; border: 2px solid var(--border); border-radius: var(--radius); background: var(--surface);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; min-height: var(--tap);
+}
+.format-card[aria-pressed="true"] { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary); }
+.format-card:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.format-img {
+  display: flex; align-items: center; justify-content: center; height: 150px;
+  background: var(--soft); border-radius: 8px; overflow: hidden;
+}
+.format-img img { max-width: 100%; max-height: 100%; display: block; background: #fff; }
+.format-name { font-size: 15px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+.format-card[aria-pressed="true"] .format-name::before { content: "\2713  "; color: var(--primary); }
+
+/* Settings: list of notebook formats */
+.format-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+.format-item {
+  display: flex; align-items: center; gap: 12px; padding: 8px; min-height: var(--tap);
+  border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); text-decoration: none;
+}
+.format-item:hover { background: var(--hover); }
+.format-item img { width: 56px; height: 56px; object-fit: contain; background: #fff; border-radius: 6px; border: 1px solid var(--soft); }
+.format-item-name { flex: 1; font-weight: 600; overflow-wrap: anywhere; }
 .storage-text { font-weight: 600; }
 
 /* ---------- Team ---------- */

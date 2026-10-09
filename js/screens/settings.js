@@ -4,14 +4,13 @@
 import { getAllEntries, deleteAllEntries, entryBytes, isStoragePersistent } from '../db.js';
 import { getSettings, saveSettings, saveExportOptions } from '../settings.js';
 import { goBack } from '../router.js';
-import { renderEntryImage } from '../render.js';
-import { canvasToBlob } from '../image.js';
+import { renderEntryImage, sampleEntry } from '../render.js';
 import { audioFileName } from '../exporter.js';
 import { isCloudConfigured, getAccount } from '../cloud.js';
 import { getTeams, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
 import { THEMES, applyTheme, customTheme, contrast } from '../themes.js';
-import { getTemplate } from '../templates.js';
+import { listFormats, getFormat } from '../templates.js';
 
 // A small picture of a theme: page background, a card with two text lines, an accent button.
 // With a second theme (Auto), the tile is split diagonally: light / dark.
@@ -47,8 +46,8 @@ export async function renderSettings(el) {
   let settings = getSettings();
   let entries = await getAllEntries();
   const account = isCloudConfigured() ? await getAccount() : null;
-  // Notebook templates per type (they live on this phone).
-  const templates = Object.fromEntries(await Promise.all(TYPES.map(async (t) => [t, await getTemplate(t)])));
+  // Notebook formats (they live on this phone).
+  const formats = await Promise.all((await listFormats()).map((f) => getFormat(f.id)));
   const urls = new UrlBag();
 
   el.innerHTML = `
@@ -108,8 +107,24 @@ export async function renderSettings(el) {
       </section>
 
       <section class="card">
+        <h2 class="section-title">Notebook formats</h2>
+        <p class="hint">Pages from your own notebook, with boxes where the photo and text go. Pick one when you export.
+          Your notebook PDF stays on this phone.</p>
+        <div class="format-list">
+          ${formats.map((f) => `
+            <a class="format-item" href="#/template/${encodeURIComponent(f.id)}">
+              <img src="${urls.make(f.page)}" alt="">
+              <span class="format-item-name">${esc(f.name)}</span>
+              <span class="muted">Edit</span>
+            </a>`).join('') || '<p class="muted">None yet.</p>'}
+        </div>
+        <a class="btn btn-secondary btn-block" href="#/template/new">+ Add a format from my notebook</a>
+        <p class="hint">Also opens a format file a teammate shared.</p>
+      </section>
+
+      <section class="card">
         <h2 class="section-title">Export options</h2>
-        <p class="hint">Each entry type has its own image style.</p>
+        <p class="hint">Each entry type's own format: used by Auto on the Export screen, and when you share one entry.</p>
         ${TYPES.map((t) => exportOptionsHtml(t)).join('')}
       </section>
 
@@ -132,7 +147,7 @@ export async function renderSettings(el) {
         <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
-      <p class="hint center">PitSide v1.5</p>
+      <p class="hint center">PitSide v1.6</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -203,16 +218,17 @@ export async function renderSettings(el) {
     box.querySelectorAll('input[data-size]').forEach((r) => { r.checked = r.value === opts.size; });
     box.querySelectorAll('input[data-field]').forEach((c) => { c.checked = Boolean(opts.fields[c.dataset.field]); });
     box.querySelectorAll('input[data-accent]').forEach((r) => { r.checked = r.value === opts.accent; });
-    box.querySelectorAll('input[data-layout]').forEach((r) => { r.checked = r.value === (templates[type] ? opts.layout : 'standard'); });
+    const current = formats.some((f) => f.id === opts.format) ? opts.format : 'standard';
+    box.querySelectorAll('input[data-format]').forEach((r) => { r.checked = r.value === current; });
     const showLayout = () => {
-      const useTemplate = (box.querySelector('input[data-layout]:checked') || {}).value === 'template';
-      box.querySelectorAll('.standard-only').forEach((f) => { f.hidden = useTemplate; });
+      const standard = (box.querySelector('input[data-format]:checked') || {}).value === 'standard';
+      box.querySelectorAll('.standard-only').forEach((f) => { f.hidden = !standard; });
     };
     showLayout();
 
     box.addEventListener('change', async () => {
       const next = {
-        layout: (box.querySelector('input[data-layout]:checked') || {}).value || 'standard',
+        format: (box.querySelector('input[data-format]:checked') || {}).value || 'standard',
         size: box.querySelector('input[data-size]:checked').value,
         fields: {},
         accent: box.querySelector('input[data-accent]:checked').value,
@@ -292,13 +308,10 @@ export async function renderSettings(el) {
       <details class="export-type" data-export-type="${type}">
         <summary><span class="type-badge" style="--accent:${esc(settings.export[type].accent)}">${TYPE_LABELS[type]}</span> export</summary>
         <fieldset class="field">
-          <legend class="label-small">Layout</legend>
-          <label class="option"><input type="radio" name="${n}-layout" data-layout value="standard"> <span>PitSide layout</span></label>
-          <label class="option"><input type="radio" name="${n}-layout" data-layout value="template" ${templates[type] ? '' : 'disabled'}>
-            <span>My notebook's layout${templates[type] ? '' : ' (set up below first)'}</span></label>
-          <a class="btn btn-secondary btn-block" href="#/template/${type}">${templates[type] ? 'Edit notebook template' : 'Set up from my notebook PDF'}</a>
-          <p class="hint">Uses a page from your own notebook as the background, with your entry placed in boxes you mark.
-            Your notebook PDF stays on this phone.</p>
+          <legend class="label-small">Format</legend>
+          <label class="option"><input type="radio" name="${n}-format" data-format value="standard"> <span>PitSide layout</span></label>
+          ${formats.map((f) => `
+            <label class="option"><input type="radio" name="${n}-format" data-format value="${esc(f.id)}"> <span>${esc(f.name)}</span></label>`).join('')}
         </fieldset>
         <fieldset class="field standard-only">
           <legend class="label-small">Image size</legend>
@@ -325,37 +338,4 @@ export async function renderSettings(el) {
         <img class="export-preview" alt="Preview of an exported ${TYPE_LABELS[type]} image" hidden>
       </details>`;
   }
-}
-
-// A made-up entry so the preview works before any entries exist.
-let samplePhoto = null;
-async function sampleEntry(type, author) {
-  if (!samplePhoto) {
-    const c = document.createElement('canvas');
-    c.width = 1200;
-    c.height = 900;
-    const ctx = c.getContext('2d');
-    const g = ctx.createLinearGradient(0, 0, 1200, 900);
-    g.addColorStop(0, '#9CA3AF');
-    g.addColorStop(1, '#4B5563');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 1200, 900);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '600 72px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Sample photo', 600, 470);
-    samplePhoto = await canvasToBlob(c, 'image/jpeg', 0.8);
-  }
-  return {
-    id: 'sample',
-    type,
-    stage: 'build',
-    photo: samplePhoto,
-    drawing: null,
-    caption: 'Sample caption: moved the intake 2 holes forward so it reaches the rings without hitting the wall.',
-    audio: null,
-    matchNumber: type === 'competition' ? 'Q12' : null,
-    author: author || 'Your name',
-    createdAt: new Date().toISOString(),
-  };
 }

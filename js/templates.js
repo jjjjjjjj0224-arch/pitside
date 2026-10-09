@@ -1,17 +1,25 @@
-// Notebook templates: a sample page from your own notebook, plus boxes that say
-// where each part of an entry goes (photo, caption, date...). Export then draws
-// each entry onto that page, so it looks like the rest of your notebook.
+// Notebook formats ("templates"): a sample page from your own notebook, plus boxes
+// that say where each part of an entry goes (photo, caption, date...). Export then
+// draws each entry onto that page, so it looks like the rest of your notebook.
 //
-// One template per entry type, stored on the phone (IndexedDB, settings store):
-//   {
-//     type, page: Blob (the sample page picture), width, height, source,
+// You can keep several formats. Each entry type has a default one (Settings), which
+// "Auto" uses on the Export screen; Export can also put everything in one format.
+//
+// Stored on the phone (IndexedDB, settings store):
+//   'formats'      -> [{ id, name }]   (the list, in the order they were made)
+//   'format:<id>'  -> {
+//     id, name, page: Blob (the sample page picture), width, height, source,
 //     boxes: [{ id, kind, x, y, w, h,              // position, as fractions of the page (0..1)
 //               cover, coverColor,                 // paint over the old content first?
 //               color, size, font, align, bold,    // text style
 //               fit }]                             // photo: 'contain' (whole photo) or 'cover' (fill box)
 //   }
+// The built-in PitSide layout is the format id 'standard' (not stored here).
 
 import { readKey, writeKey, deleteKey } from './db.js';
+import { TYPES, TYPE_LABELS } from './ui.js';
+
+export const STANDARD = 'standard';
 
 export const BOX_KINDS = [
   { kind: 'photo', label: 'Photo' },
@@ -39,22 +47,75 @@ export const FONTS = {
   hand: '"Caveat", "Ink Free", "Segoe Print", "Bradley Hand", Noteworthy, "Comic Sans MS", cursive',
 };
 
-const key = (type) => `template:${type}`;
-const cache = new Map();
+const key = (id) => `format:${id}`;
+const cache = new Map();     // id -> format (or null)
+let list = null;             // [{ id, name }]
+let loading = null;
 
-export async function getTemplate(type) {
-  if (!cache.has(type)) cache.set(type, (await readKey(key(type))) || null);
-  return cache.get(type);
+// Load the list once. Older versions kept one template per entry type
+// ('template:build'...): those become formats with the id 'legacy-<type>'
+// (settings.js points each type's default at that id).
+function ready() {
+  if (!loading) {
+    loading = (async () => {
+      list = await readKey('formats');
+      if (Array.isArray(list)) return;
+      list = [];
+      for (const type of TYPES) {
+        const old = await readKey(`template:${type}`);
+        if (!old) continue;
+        const id = `legacy-${type}`;
+        const format = { ...old, id, name: `${TYPE_LABELS[type]} notebook page` };
+        delete format.type;
+        await writeKey(key(id), format);
+        await deleteKey(`template:${type}`);
+        list.push({ id, name: format.name });
+      }
+      await writeKey('formats', list);
+    })();
+  }
+  return loading;
 }
 
-export async function saveTemplate(type, template) {
-  await writeKey(key(type), template);
-  cache.set(type, template);
+// [{ id, name }] of every saved format.
+export async function listFormats() {
+  await ready();
+  return list.map((f) => ({ ...f }));
 }
 
-export async function deleteTemplate(type) {
-  await deleteKey(key(type));
-  cache.set(type, null);
+// The whole format (with its page picture), or null.
+export async function getFormat(id) {
+  if (!id || id === STANDARD) return null;
+  await ready();
+  if (!cache.has(id)) cache.set(id, (await readKey(key(id))) || null);
+  return cache.get(id);
+}
+
+// Save a format (new ones get an id). Returns it.
+export async function saveFormat(format) {
+  await ready();
+  const saved = { ...format, id: format.id || `f${Date.now().toString(36)}`, name: (format.name || '').trim() || 'My notebook page' };
+  await writeKey(key(saved.id), saved);
+  cache.set(saved.id, saved);
+  const i = list.findIndex((f) => f.id === saved.id);
+  if (i === -1) list.push({ id: saved.id, name: saved.name }); else list[i] = { id: saved.id, name: saved.name };
+  await writeKey('formats', list);
+  return saved;
+}
+
+export async function deleteFormat(id) {
+  await ready();
+  await deleteKey(key(id));
+  cache.set(id, null);
+  list = list.filter((f) => f.id !== id);
+  await writeKey('formats', list);
+}
+
+// "PitSide layout" or the format's name.
+export async function formatName(id) {
+  if (!id || id === STANDARD) return 'PitSide layout';
+  const f = await getFormat(id);
+  return f ? f.name : 'PitSide layout';
 }
 
 let nextId = Date.now();
@@ -102,27 +163,28 @@ export function sampleCoverColor(ctx, box, width, height) {
   return `#${best.map((v) => Math.min(255, v).toString(16).padStart(2, '0')).join('')}`;
 }
 
-// ---- Template files (to share a template with teammates or another phone) ----
-// A .pitside-template.json file: the boxes plus the sample page as a data: URL.
+// ---- Format files (to share a format with teammates or another phone) ----
+// A .pitside-template.json file: the name and boxes, plus the sample page as a data: URL.
 
 const FILE_TAG = 'pitside-template';
 
-export async function templateToFile(template, name) {
+export async function templateToFile(format) {
   const page = await new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(r.result);
     r.onerror = () => reject(r.error);
-    r.readAsDataURL(template.page);
+    r.readAsDataURL(format.page);
   });
-  const { type, width, height, source, boxes } = template;
-  const json = JSON.stringify({ format: FILE_TAG, version: 1, type, width, height, source, boxes, page });
-  return new File([json], `${name}.pitside-template.json`, { type: 'application/json' });
+  const { name, width, height, source, boxes } = format;
+  const json = JSON.stringify({ format: FILE_TAG, version: 1, name, width, height, source, boxes, page });
+  const fileName = (name || 'PitSide format').replace(/[^\w -]+/g, '').trim() || 'PitSide format';
+  return new File([json], `${fileName}.pitside-template.json`, { type: 'application/json' });
 }
 
 export const isTemplateFile = (file) => /\.json$/i.test(file.name) || file.type === 'application/json';
 
-// Read a template file for entry type `type`. Throws if it isn't one.
-export async function templateFromFile(file, type) {
+// Read a format file (as a new, unsaved format). Throws if it isn't one.
+export async function templateFromFile(file) {
   let data;
   try { data = JSON.parse(await file.text()); } catch { data = null; }
   if (!data || data.format !== FILE_TAG || !Array.isArray(data.boxes) || !/^data:image\//.test(data.page || '')) {
@@ -132,5 +194,6 @@ export async function templateFromFile(file, type) {
   const boxes = data.boxes
     .filter((b) => BOX_KINDS.some((k) => k.kind === b.kind))
     .map((b) => ({ ...newBox(b.kind), ...b, id: `b${nextId++}` }));
-  return { type, page, width: data.width, height: data.height, source: data.source || file.name, boxes };
+  const name = data.name || file.name.replace(/\.pitside-template\.json$|\.json$/i, '');
+  return { name, page, width: data.width, height: data.height, source: data.source || file.name, boxes };
 }

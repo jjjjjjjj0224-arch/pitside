@@ -153,20 +153,30 @@ Until this is done, PitSide works without teams (everything else works).
 
 ## Export in your own notebook's format
 
-Settings → Export options → (Build / Competition / Programming) → **Set up from my notebook PDF**.
+You can keep several **formats** (pages from your own notebook with boxes for the entry).
 
-1. Choose your notebook as a PDF (Google Slides: File → Download → PDF), or a picture of one page.
-2. Tap the page that looks the way that entry type should look.
-3. Add boxes (Photo, Date and time, Author, Caption, …), drag them over the old content and
+Make one: Settings → Notebook formats → **+ Add a format from my notebook**.
+
+1. Choose your notebook as a PDF (Google Slides: File → Download → PDF), a picture of one
+   page, or a format file a teammate shared.
+2. Tap the sample page.
+3. Add boxes (Photo, Title, Date, Author, Caption, …), drag them over the old content and
    drag the corner to resize. "Cover" paints over what was there; "Match the page" picks the
    page color.
-4. Preview, then **Save template**. That type's export now uses "My notebook's layout".
+4. Name it, tick which entry types use it automatically, preview, then **Save format**.
 
-To give teammates the same layout: **Share this template with a teammate** makes a
+When you export, pick a format from the previews:
+- **Auto**: each entry type uses its own format (Settings → Export options → Format).
+- **PitSide layout**, or any one of your formats: every entry is made in that format.
+  Tap the chosen preview again to see it bigger.
+
+Sharing a single entry uses that type's own format.
+
+To give teammates the same format: **Share this format with a teammate** makes a
 `.pitside-template.json` file; they open it with **Choose notebook PDF** and tap Save.
 
 All on the phone: the PDF is read by the bundled pdf.js (`js/vendor/pdfjs`) and never
-uploaded. Only the chosen page is kept, as a picture in IndexedDB (key `template:<type>`).
+uploaded. Only the chosen page is kept, as a picture in IndexedDB (keys `formats`, `format:<id>`).
 
 ---
 

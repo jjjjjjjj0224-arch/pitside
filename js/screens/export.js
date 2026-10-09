@@ -1,4 +1,4 @@
-// Export screen: pick entry types and a date range, then make a ZIP with
+// Export screen: pick entry types, a date range and a format (with previews), then make a ZIP with
 // one PNG per entry, the voice notes, and entries.csv.
 
 import { getAllEntries, getAllTeamEntries } from '../db.js';
@@ -7,13 +7,17 @@ import { getTeams } from '../team.js';
 import { loadTeamFiles } from '../sync.js';
 import { photosOf } from '../image.js';
 import { goBack } from '../router.js';
-import { buildExportZip, canShareFile, downloadBlob, shareOrDownload } from '../exporter.js';
-import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast } from '../ui.js';
+import { buildExportZip, canShareFile, downloadBlob, shareOrDownload, previewImage } from '../exporter.js';
+import { listFormats, formatName } from '../templates.js';
+import { sampleEntry } from '../render.js';
+import { openViewer } from '../viewer.js';
+import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast, UrlBag } from '../ui.js';
 
 // Keep the user's choices while the app is open.
 const choice = {
   source: 'mine',    // 'mine', or a team id (that whole team's shared entries)
   includePhotos: true,   // add a photos/ folder with the full-size photos
+  format: 'auto',    // 'auto' (each type's own format), 'standard' (PitSide layout) or a format id
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
   from: null,        // 'YYYY-MM-DD' for custom
@@ -51,6 +55,16 @@ export async function renderExport(el) {
   const teams = getTeams();
   const teamEntries = teams.length ? await getAllTeamEntries() : [];
   if (choice.source !== 'mine' && !teams.some((t) => t.teamId === choice.source)) choice.source = 'mine';
+  // Formats to choose from: Auto, the PitSide layout, then your notebook formats.
+  const formats = [
+    { id: 'auto', name: 'Auto' },
+    { id: 'standard', name: 'PitSide layout' },
+    ...await listFormats(),
+  ];
+  if (!formats.some((f) => f.id === choice.format)) choice.format = 'auto';
+  // "Build: 96969Y Build" for each type, for the Auto note.
+  const typeFormatNames = Object.fromEntries(await Promise.all(TYPES.map(async (t) => [t, await formatName(settings.export[t].format)])));
+  const urls = new UrlBag();
   if (!choice.from) {
     const today = new Date();
     choice.to = toInputDate(today);
@@ -93,6 +107,19 @@ export async function renderExport(el) {
         <p class="hint range-text"></p>
       </fieldset>
 
+      <fieldset class="field">
+        <legend class="label">Format</legend>
+        <div class="format-row">
+          ${formats.map((f) => `
+            <button type="button" class="format-card" data-format="${esc(f.id)}" aria-pressed="false">
+              <span class="format-img"><img alt="" hidden></span>
+              <span class="format-name">${esc(f.name)}</span>
+            </button>`).join('')}
+        </div>
+        <p class="hint format-note"></p>
+        <a class="btn btn-ghost btn-small" href="#/template/new">+ New format from my notebook</a>
+      </fieldset>
+
       <label class="option">
         <input type="checkbox" data-include-photos>
         <span>Also include the full-size photos (a "photos" folder, for writing the notebook)</span>
@@ -132,7 +159,77 @@ export async function renderExport(el) {
     });
   }
 
+  // ---- Format previews ----
+  // Each card shows the newest matching entry in that format (or a sample entry).
+  async function previewEntry() {
+    const newest = matching().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+    const type = newest ? newest.type : [...choice.types][0] || TYPES[0];
+    const sample = await sampleEntry(type, settings.author);
+    if (!newest) return sample;
+    if (choice.source === 'mine') return newest;
+    // A teammate's entry: its photos may not be on this phone yet, so use the sample photo.
+    const mine = entries.find((e) => e.id === newest.id);
+    return mine || { ...sample, ...newest, id: newest.id, photos: sample.photos, audio: null };
+  }
+
+  let previewKey = null;
+  let previewTimer = null;
+  let previewRun = 0;
+  function schedulePreviews() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(drawPreviews, 250);
+  }
+  async function drawPreviews() {
+    const entry = await previewEntry();
+    const key = `${entry.id}|${entry.type}`;
+    if (key === previewKey) return;
+    previewKey = key;
+    const run = ++previewRun;
+    // The chosen format first, so the one that matters shows up soonest.
+    const order = [...formats].sort((a, b) => (b.id === choice.format) - (a.id === choice.format));
+    for (const f of order) {
+      if (run !== previewRun) return;     // filters changed: a newer run took over
+      try {
+        const jpeg = await previewImage(entry, settings, f.id);
+        if (run !== previewRun) return;
+        const img = el.querySelector(`[data-format="${CSS.escape(f.id)}"] img`);
+        if (!img) return;                 // left the screen
+        urls.revoke(img.src);
+        img.src = urls.make(jpeg);
+        img.hidden = false;
+      } catch (err) {
+        console.warn('Preview failed', f.id, err);
+      }
+    }
+  }
+
+  function showFormat() {
+    el.querySelectorAll('[data-format]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.format === choice.format)));
+    const note = $('.format-note');
+    if (choice.format === 'auto') {
+      note.textContent = `Each type uses its own format (set in Settings): ${[...choice.types].map((t) => `${TYPE_LABELS[t]}: ${typeFormatNames[t]}`).join(' · ')}.`;
+    } else {
+      note.textContent = `Every entry is made in ${formats.find((f) => f.id === choice.format).name}. Tap it again to see it bigger.`;
+    }
+  }
+
+  $('.format-row').addEventListener('click', async (e) => {
+    const card = e.target.closest('[data-format]');
+    if (!card) return;
+    if (card.dataset.format !== choice.format) {
+      choice.format = card.dataset.format;
+      update();
+      return;
+    }
+    // Tapping the chosen one again: see the preview full size.
+    const entry = await previewEntry();
+    const big = await previewImage(entry, settings, choice.format, 1600);
+    openViewer([{ photo: big, drawing: null }], 0);
+  });
+
   function update() {
+    showFormat();
+    schedulePreviews();
     el.querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-pressed', String(choice.types.has(b.dataset.type))));
     el.querySelectorAll('input[name="range"]').forEach((r) => { r.checked = r.value === choice.range; });
     el.querySelectorAll('input[name="source"]').forEach((r) => { r.checked = r.value === choice.source; });
@@ -214,7 +311,7 @@ export async function renderExport(el) {
     try {
       const zip = await buildExportZip(list, settings, (done, total) => {
         exportBtn.textContent = `Making images… ${done} of ${total}`;
-      }, { includePhotos: choice.includePhotos });
+      }, { includePhotos: choice.includePhotos, format: choice.format });
       const name = `pitside_export_${toInputDate(new Date())}.zip`;
       zipFile = new File([zip], name, { type: 'application/zip' });
       const voiceCount = list.filter((e) => e.audio).length;
@@ -257,4 +354,12 @@ export async function renderExport(el) {
   });
 
   update();
+
+  return {
+    unmount() {
+      clearTimeout(previewTimer);
+      previewRun += 1;      // stop any previews still being made
+      urls.revokeAll();
+    },
+  };
 }

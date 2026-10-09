@@ -5,13 +5,15 @@ import { readSettings, writeSettings } from './db.js';
 import { TYPES } from './ui.js';
 
 // Export options for one entry type.
-//   size:   'slide' (1920x1080, 16:9) or 'square' (1080x1080)
+//   format: the default export format: 'standard' (PitSide layout) or a notebook
+//           format id (templates.js). "Auto" on the Export screen uses this.
+//   size:   'slide' (1920x1080, 16:9) or 'square' (1080x1080)    (PitSide layout only)
 //   fields: which text to print on the exported image
 //   accent: color of the type label
 function exportDefaults(accent, showMatch) {
   return {
     size: 'slide',
-    layout: 'standard',   // 'standard' (PitSide layout) or 'template' (your notebook page, see templates.js)
+    format: 'standard',
     fields: { caption: true, datetime: true, author: true, stage: true, match: showMatch },
     accent,
   };
@@ -39,7 +41,10 @@ function withDefaults(saved = {}) {
   const s = { ...DEFAULTS, ...saved, export: {} };
   for (const type of TYPES) {
     const def = DEFAULTS.export[type];
-    const got = (saved.export && saved.export[type]) || {};
+    const got = { ...((saved.export && saved.export[type]) || {}) };
+    // v1.5 had layout: 'template' = this type's own notebook page (now the format 'legacy-<type>').
+    if (!got.format && got.layout === 'template') got.format = `legacy-${type}`;
+    delete got.layout;
     s.export[type] = { ...def, ...got, fields: { ...def.fields, ...(got.fields || {}) } };
   }
   return s;

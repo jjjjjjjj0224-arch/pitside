@@ -11,7 +11,7 @@
 
 import { loadImage, canvasToBlob, fitContain, photosOf } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
-import { getTemplate, TEXT_SIZES, FONTS } from './templates.js';
+import { getFormat, TEXT_SIZES, FONTS } from './templates.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 const MARGIN = 64;
@@ -19,14 +19,13 @@ const TEXT_DARK = '#111827';
 const TEXT_MID = '#374151';
 const TEXT_LIGHT = '#4B5563';
 
-// options: settings.export[entry.type] = { size, fields, accent }
+// options: settings.export[entry.type] = { format, size, fields, accent }
+// formatId: 'standard' (PitSide layout) or a notebook format id; default: that type's own format.
 // audioFileName: name of the voice note file in the export (if any)
-export async function renderEntryImage(entry, options, audioFileName, photoIndex = 0) {
-  // "Your notebook" layout: draw onto the sample page from the notebook template.
-  if (options.layout === 'template') {
-    const template = await getTemplate(entry.type);
-    if (template) return renderTemplateImage(entry, template, audioFileName, photoIndex);
-  }
+export async function renderEntryImage(entry, options, audioFileName, photoIndex = 0, formatId = options.format) {
+  // A notebook format: draw onto the sample page from your notebook.
+  const template = await getFormat(formatId);
+  if (template) return renderTemplateImage(entry, template, audioFileName, photoIndex);
   const W = options.size === 'square' ? 1080 : 1920;
   const H = 1080;
   const canvas = document.createElement('canvas');
@@ -307,4 +306,36 @@ function drawTemplateText(ctx, text, box, b, scale) {
   const top = lines.length === 1 && box.h < size * 2.6 ? box.y + (box.h - size) / 2 : box.y;
   lines.forEach((line, i) => ctx.fillText(line, x, top + i * lineH));
   ctx.textAlign = 'left';
+}
+
+// A made-up entry, so previews work before there are any entries.
+let samplePhoto = null;
+export async function sampleEntry(type, author) {
+  if (!samplePhoto) {
+    const c = document.createElement('canvas');
+    c.width = 1200;
+    c.height = 900;
+    const ctx = c.getContext('2d');
+    const g = ctx.createLinearGradient(0, 0, 1200, 900);
+    g.addColorStop(0, '#9CA3AF');
+    g.addColorStop(1, '#4B5563');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 1200, 900);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `600 72px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText('Sample photo', 600, 470);
+    samplePhoto = await canvasToBlob(c, 'image/jpeg', 0.8);
+  }
+  return {
+    id: 'sample',
+    type,
+    stage: 'build',
+    photos: [{ photo: samplePhoto, drawing: null }],
+    caption: 'Sample caption: moved the intake 2 holes forward so it reaches the rings without hitting the wall.',
+    audio: null,
+    matchNumber: type === 'competition' ? 'Q12' : null,
+    author: author || 'Your name',
+    createdAt: new Date().toISOString(),
+  };
 }

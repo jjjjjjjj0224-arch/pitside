@@ -1,7 +1,7 @@
-// Notebook template editor (#/template/build, /competition, /programming).
-//   1. Upload your notebook as a PDF (or a picture of one page) and tap a sample page.
+// Notebook format editor (#/template/new, #/template/<format id>).
+//   1. Upload your notebook as a PDF (or a picture of one page, or a format file) and tap a sample page.
 //   2. Add boxes on the page for the photo, caption, date... and drag/resize them.
-//   3. Preview with your newest entry, then Save.
+//   3. Name it, pick which entry types use it automatically, preview, then Save.
 // Everything stays on the phone: the PDF is read here and never uploaded.
 
 import { goBack } from '../router.js';
@@ -9,25 +9,27 @@ import { getAllEntries } from '../db.js';
 import { getSettings, saveExportOptions } from '../settings.js';
 import { openPdf } from '../pdfpages.js';
 import { loadImage, canvasToBlob } from '../image.js';
-import { renderTemplateImage } from '../render.js';
+import { renderTemplateImage, sampleEntry } from '../render.js';
 import { audioFileName, shareOrDownload } from '../exporter.js';
 import {
-  BOX_KINDS, kindLabel, TEXT_SIZES, getTemplate, saveTemplate, deleteTemplate, newBox, sampleCoverColor,
+  BOX_KINDS, kindLabel, TEXT_SIZES, getFormat, saveFormat, deleteFormat, newBox, sampleCoverColor,
   templateToFile, templateFromFile, isTemplateFile,
 } from '../templates.js';
-import { TYPE_LABELS, esc, confirmDialog, toast, UrlBag } from '../ui.js';
+import { TYPES, TYPE_LABELS, esc, confirmDialog, toast, UrlBag } from '../ui.js';
 
 const PAGE_WIDTH = 1920;          // sample pages are kept 1920 pixels wide (sharp on a slide)
 const THUMB_WIDTH = 220;
 const PAGES_PER_BATCH = 24;
 
-export async function renderTemplateEditor(el, type) {
-  if (!TYPE_LABELS[type]) {
-    el.innerHTML = '<main class="page"><h1>Unknown entry type</h1><a class="btn btn-primary btn-block" href="#/settings">Settings</a></main>';
+export async function renderTemplateEditor(el, idParam) {
+  const id = decodeURIComponent(idParam);
+  const saved = id === 'new' ? null : await getFormat(id);
+  if (id !== 'new' && !saved) {
+    el.innerHTML = '<main class="page"><h1>Format not found</h1><a class="btn btn-primary btn-block" href="#/settings">Settings</a></main>';
     return {};
   }
   const urls = new UrlBag();
-  const saved = await getTemplate(type);
+
   // Working copy (saved only when you tap Save).
   let tpl = saved ? { ...saved, boxes: saved.boxes.map((b) => ({ ...b })) } : null;
   let pdf = null;
@@ -35,12 +37,14 @@ export async function renderTemplateEditor(el, type) {
   let zoom = 1;
   let dirty = false;
   let pagePixels = null;      // canvas with the sample page, to pick cover colors from
+  // Entry types that use this format automatically (Settings > Export options).
+  const useFor = new Set(saved ? TYPES.filter((t) => getSettings().export[t].format === saved.id) : []);
 
   function header() {
     return `
       <header class="topbar">
         <button type="button" class="btn btn-ghost" data-act="back">Back</button>
-        <h1>${esc(TYPE_LABELS[type])} template</h1>
+        <h1>${saved ? 'Edit format' : 'New format'}</h1>
         <span class="topbar-spacer"></span>
       </header>`;
   }
@@ -60,8 +64,8 @@ export async function renderTemplateEditor(el, type) {
           ${tpl ? '<button type="button" class="btn btn-secondary btn-block" data-act="back-to-editor">Keep the current sample page</button>' : ''}
         </section>
         <section class="card page-picker" hidden>
-          <h2 class="section-title">2. Tap a sample page for ${esc(TYPE_LABELS[type])} entries</h2>
-          <p class="hint">Pick a page that looks the way ${esc(TYPE_LABELS[type])} entries should look.</p>
+          <h2 class="section-title">2. Tap a sample page</h2>
+          <p class="hint">Pick a page that looks the way your exported entries should look.</p>
           <div class="page-grid"></div>
           <button type="button" class="btn btn-secondary btn-block" data-act="more-pages" hidden>Show more pages</button>
         </section>
@@ -86,7 +90,8 @@ export async function renderTemplateEditor(el, type) {
       try {
         if (isTemplateFile(file)) {
           // A ready-made template (boxes already placed): straight to the editor.
-          tpl = await templateFromFile(file, type);
+          const loaded = await templateFromFile(file);
+          tpl = { ...loaded, id: tpl ? tpl.id : undefined, name: tpl ? tpl.name : loaded.name };
           pagePixels = null;
           dirty = true;
           if (pdf) { pdf.close(); pdf = null; }
@@ -160,7 +165,8 @@ export async function renderTemplateEditor(el, type) {
   async function usePage(canvas, source) {
     const page = await canvasToBlob(canvas, 'image/jpeg', 0.92);
     const boxes = tpl ? tpl.boxes : [];
-    tpl = { type, page, width: canvas.width, height: canvas.height, source, boxes };
+    const name = tpl ? tpl.name : source.replace(/\.pdf\b/i, '');
+    tpl = { id: tpl ? tpl.id : undefined, name, page, width: canvas.width, height: canvas.height, source, boxes };
     pagePixels = canvas;
     dirty = true;
     if (pdf) { pdf.close(); pdf = null; }
@@ -213,17 +219,28 @@ export async function renderTemplateEditor(el, type) {
         <section class="card box-panel" hidden></section>
 
         <section class="card">
-          <button type="button" class="btn btn-secondary btn-block" data-act="preview">Preview with my newest ${esc(TYPE_LABELS[type])} entry</button>
+          <button type="button" class="btn btn-secondary btn-block" data-act="preview">Preview with my newest entry</button>
           <img class="template-preview" alt="Preview of an exported entry" hidden>
           <p class="hint preview-note" hidden></p>
         </section>
 
+        <section class="card">
+          <label class="label" for="format-name">Name</label>
+          <input id="format-name" class="input" type="text" maxlength="60" value="${esc(tpl.name || '')}" placeholder="For example: 96969Y Build">
+          <fieldset class="field">
+            <legend class="label-small">Use automatically for</legend>
+            ${TYPES.map((t) => `
+              <label class="option"><input type="checkbox" data-use-type="${t}" ${useFor.has(t) ? 'checked' : ''}> <span>${esc(TYPE_LABELS[t])} entries</span></label>`).join('')}
+            <p class="hint">"Auto" on the Export screen (and sharing one entry) uses these. You can still pick any format when you export.</p>
+          </fieldset>
+        </section>
+
         <p class="form-error" role="alert" hidden></p>
         <div class="button-row">
-          <button type="button" class="btn btn-primary btn-lg" data-act="save">Save template</button>
-          ${saved ? '<button type="button" class="btn btn-danger" data-act="remove">Remove</button>' : ''}
+          <button type="button" class="btn btn-primary btn-lg" data-act="save">Save format</button>
+          ${saved ? '<button type="button" class="btn btn-danger" data-act="remove">Delete</button>' : ''}
         </div>
-        <button type="button" class="btn btn-ghost btn-block" data-act="share-file">Share this template with a teammate</button>
+        <button type="button" class="btn btn-ghost btn-block" data-act="share-file">Share this format with a teammate</button>
       </main>`;
     wireCommon();
     wireEditor();
@@ -399,46 +416,59 @@ export async function renderTemplateEditor(el, type) {
       drawPanel();
     });
 
-    // Preview with the newest entry of this type (or a sample).
+    // Preview with my newest entry (or a sample).
     $('[data-act="preview"]').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btn.disabled = true;
       try {
-        const entry = (await getAllEntries()).find((x) => x.type === type) || await sampleEntry(type);
+        const entry = (await getAllEntries())[0] || await sampleEntry([...useFor][0] || TYPES[0], getSettings().author);
         const png = await renderTemplateImage(entry, tpl, audioFileName(entry), 0);
         const img = $('.template-preview');
         img.src = urls.make(png);
         img.hidden = false;
         const note = $('.preview-note');
         note.hidden = false;
-        note.textContent = entry.id === 'sample' ? 'Using sample text (you have no entries of this type yet).' : `Using: ${entry.caption ? entry.caption.split('\n')[0] : 'your newest entry'}`;
+        note.textContent = entry.id === 'sample' ? 'Using sample text (you have no entries yet).' : `Using: ${entry.caption ? entry.caption.split('\n')[0] : 'your newest entry'}`;
         img.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } finally {
         btn.disabled = false;
       }
     });
 
+    $('#format-name').addEventListener('input', (e) => { tpl.name = e.target.value; dirty = true; });
+    el.querySelectorAll('[data-use-type]').forEach((c) => c.addEventListener('change', () => {
+      if (c.checked) useFor.add(c.dataset.useType); else useFor.delete(c.dataset.useType);
+      dirty = true;
+    }));
+
+    const showError = (m) => { const err = $('.form-error'); err.textContent = m; err.hidden = !m; };
+
     $('[data-act="save"]').addEventListener('click', async () => {
-      if (!tpl.boxes.length) {
-        const err = $('.form-error');
-        err.textContent = 'Add at least one box (for example Photo and Caption) first.';
-        err.hidden = false;
-        return;
-      }
-      await saveTemplate(type, tpl);
-      // Use the template for this type's exports.
-      const opts = getSettings().export[type];
-      await saveExportOptions(type, { ...opts, layout: 'template' });
+      if (!tpl.boxes.length) { showError('Add at least one box (for example Photo and Caption) first.'); return; }
+      if (!(tpl.name || '').trim()) { showError('Give this format a name.'); $('#format-name').focus(); return; }
+      const result = await saveFormat(tpl);
+      tpl.id = result.id;
+      await setDefaults(result.id);
       dirty = false;
-      toast(`${TYPE_LABELS[type]} template saved. Exports now use your notebook layout.`);
+      toast(useFor.size
+        ? `Saved. ${[...useFor].map((t) => TYPE_LABELS[t]).join(' and ')} entries now export in "${result.name}".`
+        : `Saved "${result.name}". Pick it on the Export screen.`);
       goBack('#/settings');
     });
 
-    // A file teammates open with "Choose notebook PDF" to get the same template.
+    // Each type ticked uses this format; types unticked that used it go back to the PitSide layout.
+    async function setDefaults(formatId) {
+      for (const t of TYPES) {
+        const opts = getSettings().export[t];
+        const want = useFor.has(t) ? formatId : (opts.format === formatId ? 'standard' : opts.format);
+        if (want !== opts.format) await saveExportOptions(t, { ...opts, format: want });
+      }
+    }
+
+    // A file teammates open with "Choose notebook PDF" to get the same format.
     $('[data-act="share-file"]').addEventListener('click', async () => {
-      const name = `${getSettings().author || 'PitSide'} ${TYPE_LABELS[type]}`.replace(/[^\w -]+/g, '').trim();
-      const file = await templateToFile(tpl, name);
-      if (await shareOrDownload(file, `${TYPE_LABELS[type]} template`, { preferDownload: true }) === 'retry') {
+      const file = await templateToFile(tpl);
+      if (await shareOrDownload(file, tpl.name || 'PitSide format', { preferDownload: true }) === 'retry') {
         toast('Ready. Tap Share again.');
       }
     });
@@ -447,17 +477,17 @@ export async function renderTemplateEditor(el, type) {
     if (removeBtn) {
       removeBtn.addEventListener('click', async () => {
         const ok = await confirmDialog({
-          title: `Remove the ${TYPE_LABELS[type]} template?`,
-          message: 'Exports of this type go back to the standard PitSide layout.',
-          confirmText: 'Remove',
+          title: `Delete "${saved.name}"?`,
+          message: 'Entry types that used it go back to the PitSide layout.',
+          confirmText: 'Delete',
           danger: true,
         });
         if (!ok) return;
-        await deleteTemplate(type);
-        const opts = getSettings().export[type];
-        await saveExportOptions(type, { ...opts, layout: 'standard' });
+        useFor.clear();
+        await setDefaults(saved.id);
+        await deleteFormat(saved.id);
         dirty = false;
-        toast('Template removed');
+        toast('Format deleted');
         goBack('#/settings');
       });
     }
@@ -491,25 +521,4 @@ export async function renderTemplateEditor(el, type) {
 function contrastText(hex) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   return (0.299 * r + 0.587 * g + 0.114 * b) > 150 ? '#111111' : '#FFFFFF';
-}
-
-// Placeholder entry for the preview when there are no entries of this type yet.
-async function sampleEntry(type) {
-  const c = document.createElement('canvas');
-  c.width = 1200;
-  c.height = 900;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#6B7280';
-  ctx.fillRect(0, 0, 1200, 900);
-  ctx.fillStyle = '#FFFFFF';
-  ctx.font = '600 80px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('Sample photo', 600, 470);
-  const photo = await canvasToBlob(c, 'image/jpeg', 0.8);
-  return {
-    id: 'sample', type, stage: 'build', matchNumber: 'Q12', author: getSettings().author || 'Your name',
-    caption: 'Sample caption: moved the intake forward two holes so it reaches the rings without hitting the wall.',
-    createdAt: new Date().toISOString(), audio: null,
-    photos: [{ photo, drawing: null }],
-  };
 }

@@ -119,6 +119,11 @@ export class UrlBag {
     this.urls.push(url);
     return url;
   }
+  revoke(url) {
+    if (!this.urls.includes(url)) return;
+    URL.revokeObjectURL(url);
+    this.urls = this.urls.filter((u) => u !== url);
+  }
   revokeAll() {
     this.urls.forEach((u) => URL.revokeObjectURL(u));
     this.urls = [];
