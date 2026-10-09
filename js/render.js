@@ -14,6 +14,7 @@
 import { loadImage, canvasToBlob, fitContain, photosOf } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
 import { getFormat, TEXT_SIZES, FONTS } from './templates.js';
+import { testStats, testSummary, trialPassed, matchSummary, entryTitle, witnessText, shortDate } from './entrydata.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 const MARGIN = 64;
@@ -31,6 +32,8 @@ export async function renderEntryImage(entry, options, audioFileName, pageIndex 
   if (template) return renderTemplateImage(entry, template, audioFileName, pageIndex, options);
   const W = options.size === 'square' ? 1080 : 1920;
   const H = 1080;
+  const pageCount = photoPageCount(entry, options);
+  if (pageIndex >= pageCount) return renderTestPage(entry, options, W, H);
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -41,7 +44,6 @@ export async function renderEntryImage(entry, options, audioFileName, pageIndex 
   ctx.fillRect(0, 0, W, H);
 
   const total = photosOf(entry).length;
-  const pageCount = pageCountFor(entry, options);
   const onPage = photosOnPage(entry, options, null, pageIndex);
   const loaded = await Promise.all(onPage.map(async (p) => ({
     number: p.number,
@@ -150,9 +152,22 @@ function photosPerPage(entry, options, template) {
   return Math.max(1, Number(options.photosPerPage) || 1);
 }
 
+// Pages with photos (at least one, for an entry without photos).
+function photoPageCount(entry, options, template) {
+  return Math.max(1, Math.ceil(photosOf(entry).length / photosPerPage(entry, options, template)));
+}
+
+// Test results get a page of their own (table + chart) at the end, unless the
+// notebook format has a "Test results" box for them.
+function hasTestPage(entry, options, template) {
+  if (!testStats(entry.testData)) return false;
+  if (options.fields && options.fields.test === false) return false;
+  return !(template && template.boxes.some((b) => b.kind === 'testData'));
+}
+
 // How many images an entry makes in this layout.
 export function pageCountFor(entry, options, template) {
-  return Math.max(1, Math.ceil(photosOf(entry).length / photosPerPage(entry, options, template)));
+  return photoPageCount(entry, options, template) + (hasTestPage(entry, options, template) ? 1 : 0);
 }
 
 // The photos on one page, each with its number in the whole entry (1, 2, 3...).
@@ -224,7 +239,12 @@ function textBlocks(entry, options, audioFileName, photoLabel, captionText, firs
   if (f.datetime) meta.push(longDateTime(entry.createdAt));
   if (f.author && entry.author) meta.push(`Author: ${entry.author}`);
   if (f.stage && entry.stage) meta.push(`Stage: ${STAGE_LABELS[entry.stage] || entry.stage}`);
-  if (f.match && entry.matchNumber) meta.push(`Match: ${entry.matchNumber}`);
+  if (f.subsystem && entry.subsystem) meta.push(`Subsystem: ${entry.subsystem}`);
+  if (f.match && (entry.matchNumber || matchSummary(entry.match))) {
+    meta.push([entry.matchNumber ? `Match ${entry.matchNumber}` : 'Match', matchSummary(entry.match)].filter(Boolean).join(' · '));
+  }
+  if (f.test !== false && firstPage && testSummary(entry.testData)) meta.push(`Test: ${testSummary(entry.testData)}`);
+  if (f.witness !== false && witnessText(entry)) meta.push(witnessText(entry));
   meta.forEach((text) => blocks.push({ kind: 'meta', text }));
   if (captionText) blocks.push({ kind: 'caption', text: captionText });
   if (firstPage && entry.audio && audioFileName) blocks.push({ kind: 'voice', text: `Voice note: see audio file ${audioFileName}` });
@@ -353,14 +373,19 @@ function templateBoxText(kind, entry, audioFileName) {
   const d = new Date(entry.createdAt);
   switch (kind) {
     case 'label': return (TYPE_LABELS[entry.type] || entry.type).toUpperCase();
-    // Page title like the notebook's "Build - ...": the design stage, or else the entry type.
-    case 'title': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : (TYPE_LABELS[entry.type] || entry.type);
+    // Page title like the notebook's "Build - Drivetrain": the stage (or type), then the subsystem.
+    case 'title': return entryTitle(entry);
     case 'datetime': return longDateTime(entry.createdAt);
     case 'date': return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
     case 'shortDate': return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
     case 'author': return entry.author || '';
     case 'stage': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : '';
     case 'match': return entry.matchNumber || '';
+    case 'subsystem': return entry.subsystem || '';
+    case 'matchResult': return matchSummary(entry.match);
+    case 'testSummary': return testSummary(entry.testData);
+    case 'witness': return entry.witness ? entry.witness.name : '';
+    case 'witnessDate': return entry.witness && entry.witness.at ? shortDate(entry.witness.at) : '';
     case 'voice': return entry.audio && audioFileName ? `Voice note: see audio file ${audioFileName}` : '';
     default: return '';
   }
@@ -370,6 +395,8 @@ function templateBoxText(kind, entry, audioFileName) {
 // A format with several Photo boxes fills them in reading order; more photos than
 // boxes continue on the next page (pageIndex).
 export async function renderTemplateImage(entry, template, audioFileName, pageIndex = 0, options = {}) {
+  const pageCount = photoPageCount(entry, options, template);
+  if (pageIndex >= pageCount) return renderTestPage(entry, options, 1920, 1080);
   const page = await loadImage(template.page);
   const W = page.naturalWidth;
   const H = page.naturalHeight;
@@ -380,7 +407,6 @@ export async function renderTemplateImage(entry, template, audioFileName, pageIn
   ctx.drawImage(page, 0, 0, W, H);
 
   const total = photosOf(entry).length;
-  const pageCount = pageCountFor(entry, options, template);
   const onPage = photosOnPage(entry, options, template, pageIndex);
   const slots = new Map(photoBoxesOf(template).map((b, i) => [b, onPage[i] || null]));
   const tagged = onPage.length > 1 && onPage.some((p) => (p.note || '').trim());
@@ -401,10 +427,14 @@ export async function renderTemplateImage(entry, template, audioFileName, pageIn
       if (tagged) drawNumberTag(ctx, r, p.number, scale);
       continue;
     }
+    if (b.kind === 'testData') {
+      if (pageIndex === 0 && testStats(entry.testData)) drawTestBlock(ctx, box, entry.testData, scale, b.color || '#111111');
+      continue;
+    }
     let text;
     if (b.kind === 'caption') text = pageText(entry, options, pageIndex, pageCount, onPage);
     else if (b.kind === 'photoNumber') text = photoLabel(onPage, total);
-    else if (b.kind === 'voice' && pageIndex > 0) text = '';     // the voice note line only on the first page
+    else if ((b.kind === 'voice' || b.kind === 'testSummary') && pageIndex > 0) text = '';     // first page only
     else text = templateBoxText(b.kind, entry, audioFileName);
     if (text) drawTemplateText(ctx, text, box, b, scale);
   }
@@ -468,6 +498,236 @@ function drawTemplateText(ctx, text, box, b, scale) {
   ctx.textAlign = 'left';
 }
 
+// ---- Test results: a table of trials and a chart ----
+
+const PASS = '#15803D';
+const FAIL = '#B91C1C';
+const NEUTRAL = '#64748B';
+
+// The extra page with an entry's test results (PitSide style, white).
+async function renderTestPage(entry, options, W, H) {
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, W, H);
+  const accent = options.accent || '#C2410C';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = accent;
+  ctx.font = `700 40px ${FONT}`;
+  ctx.fillText('TEST RESULTS', MARGIN, MARGIN);
+  ctx.fillRect(MARGIN, MARGIN + 52, 90, 8);
+  ctx.fillStyle = TEXT_MID;
+  ctx.font = `400 30px ${FONT}`;
+  const sub = [entryTitle(entry), longDateTime(entry.createdAt), entry.author].filter(Boolean).join(' · ');
+  ctx.fillText(wrapText(ctx, sub, W - MARGIN * 2)[0] || '', MARGIN, MARGIN + 76);
+  const top = MARGIN + 130;
+  drawTestBlock(ctx, { x: MARGIN, y: top, w: W - MARGIN * 2, h: H - top - MARGIN }, entry.testData, 1, TEXT_DARK);
+  return canvasToBlob(canvas, 'image/png');
+}
+
+// Draw a test's name and summary, a chart and a table of trials inside a box.
+// scale: text size (1 = for a 1920-wide image).
+export function drawTestBlock(ctx, box, test, scale, color = TEXT_DARK) {
+  const s = testStats(test);
+  if (!s) return;
+  const px = (n) => Math.max(10, Math.round(n * scale));
+  ctx.save();
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+
+  // Name and summary line.
+  let y = box.y;
+  ctx.fillStyle = color;
+  ctx.font = `700 ${px(38)}px ${FONT}`;
+  ctx.fillText(wrapText(ctx, test.metric || 'Test results', box.w)[0] || '', box.x, y);
+  y += px(50);
+  ctx.font = `400 ${px(26)}px ${FONT}`;
+  ctx.fillStyle = TEXT_MID;
+  for (const line of wrapText(ctx, testSummary(test, { withName: false }), box.w).slice(0, 2)) {
+    ctx.fillText(line, box.x, y);
+    y += px(34);
+  }
+  y += px(14);
+
+  // Chart and table side by side (wide box) or one above the other (tall box).
+  const rest = { x: box.x, y, w: box.w, h: box.y + box.h - y };
+  const gap = px(36);
+  let chartBox;
+  let tableBox;
+  if (rest.w > rest.h * 1.2) {
+    chartBox = { ...rest, w: rest.w * 0.6 - gap / 2 };
+    tableBox = { ...rest, x: rest.x + rest.w * 0.6 + gap / 2, w: rest.w * 0.4 - gap / 2 };
+  } else {
+    chartBox = { ...rest, h: rest.h * 0.55 - gap / 2 };
+    tableBox = { ...rest, y: rest.y + rest.h * 0.55 + gap / 2, h: rest.h * 0.45 - gap / 2 };
+  }
+  if (test.kind === 'passfail') drawPassFailChart(ctx, chartBox, test, s, px);
+  else drawBarChart(ctx, chartBox, test, s, px);
+  drawTrialTable(ctx, tableBox, test, px, color);
+  ctx.restore();
+}
+
+function drawBarChart(ctx, box, test, s, px) {
+  const values = test.trials.map((t) => (t.value === null || t.value === '' ? null : Number(t.value)));
+  const goal = test.goal === null || test.goal === '' || test.goal === undefined ? null : Number(test.goal);
+  const top = Math.max(...values.filter((v) => v !== null), goal ?? -Infinity, 0);
+  const bottom = Math.min(...values.filter((v) => v !== null), goal ?? Infinity, 0);
+  const span = (top - bottom) || 1;
+  const pad = { l: px(70), b: px(40), t: px(20) };
+  const plot = { x: box.x + pad.l, y: box.y + pad.t, w: box.w - pad.l, h: box.h - pad.t - pad.b };
+  const yOf = (v) => plot.y + plot.h - ((v - bottom) / (span * 1.1)) * plot.h;
+
+  // Axis and a few grid lines with values.
+  ctx.strokeStyle = '#E5E7EB';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = TEXT_LIGHT;
+  ctx.font = `400 ${px(20)}px ${FONT}`;
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const v = bottom + (span * 1.1 * i) / 4;
+    const gy = yOf(v);
+    ctx.beginPath(); ctx.moveTo(plot.x, gy); ctx.lineTo(plot.x + plot.w, gy); ctx.stroke();
+    ctx.fillText(String(Math.round(v * 10) / 10), plot.x - px(10), gy - px(10));
+  }
+  ctx.textAlign = 'left';
+
+  // Bars: green = met the goal, red = missed it, grey = no goal.
+  const n = values.length;
+  const slot = plot.w / Math.max(1, n);
+  const barW = Math.max(2, Math.min(slot * 0.7, px(90)));
+  values.forEach((v, i) => {
+    const cx = plot.x + slot * i + slot / 2;
+    if (v !== null) {
+      const passed = trialPassed(test, test.trials[i]);
+      ctx.fillStyle = passed === true ? PASS : passed === false ? FAIL : NEUTRAL;
+      const y0 = yOf(Math.max(0, bottom));
+      const y1 = yOf(v);
+      ctx.fillRect(cx - barW / 2, Math.min(y0, y1), barW, Math.max(2, Math.abs(y0 - y1)));
+      if (n <= 15) {
+        ctx.fillStyle = TEXT_DARK;
+        ctx.font = `600 ${px(20)}px ${FONT}`;
+        ctx.textAlign = 'center';
+        ctx.fillText(String(v), cx, Math.min(y0, y1) - px(26));
+      }
+    }
+    if (n <= 20) {
+      ctx.fillStyle = TEXT_LIGHT;
+      ctx.font = `400 ${px(20)}px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(i + 1), cx, plot.y + plot.h + px(10));
+    }
+  });
+  ctx.textAlign = 'left';
+
+  // Goal (dashed) and average (dotted) lines.
+  const line = (v, dash, stroke, label, below = false) => {
+    const ly = yOf(v);
+    ctx.save();
+    ctx.setLineDash(dash);
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = px(3);
+    ctx.beginPath(); ctx.moveTo(plot.x, ly); ctx.lineTo(plot.x + plot.w, ly); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = stroke;
+    ctx.font = `700 ${px(20)}px ${FONT}`;
+    ctx.textAlign = 'right';
+    ctx.fillText(label, plot.x + plot.w, below ? ly + px(8) : ly - px(26));
+    ctx.textAlign = 'left';
+  };
+  // Goal and average close together? The lower line's label goes under it so they don't overlap.
+  const near = goal !== null && s.avg !== null && Math.abs(yOf(goal) - yOf(s.avg)) < px(30);
+  if (goal !== null) line(goal, [px(14), px(10)], '#111827', `Goal ${goal}`, near && goal < s.avg);
+  if (s.avg !== null) line(s.avg, [px(4), px(8)], '#1D4ED8', `Avg ${s.avg}`, near && s.avg <= goal);
+}
+
+function drawPassFailChart(ctx, box, test, s, px) {
+  // Big success rate, then one square per trial.
+  ctx.fillStyle = s.rate >= 50 ? PASS : FAIL;
+  ctx.font = `700 ${px(120)}px ${FONT}`;
+  ctx.fillText(`${s.rate}%`, box.x, box.y);
+  ctx.fillStyle = TEXT_MID;
+  ctx.font = `400 ${px(30)}px ${FONT}`;
+  ctx.fillText(`${s.passed} of ${s.judged} passed`, box.x, box.y + px(140));
+  const size = px(46);
+  const gap = px(10);
+  const perRow = Math.max(1, Math.floor((box.w + gap) / (size + gap)));
+  let i = 0;
+  for (const t of test.trials) {
+    if (t.pass !== true && t.pass !== false) continue;
+    const x = box.x + (i % perRow) * (size + gap);
+    const y = box.y + px(200) + Math.floor(i / perRow) * (size + gap);
+    if (y + size > box.y + box.h) break;
+    ctx.fillStyle = t.pass ? PASS : FAIL;
+    ctx.fillRect(x, y, size, size);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = `700 ${px(22)}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(String(i + 1), x + size / 2, y + size / 2 - px(12));
+    ctx.textAlign = 'left';
+    i += 1;
+  }
+}
+
+// Trial | Result | ✓/✗, in one or two column groups so long tests still fit.
+function drawTrialTable(ctx, box, test, px, color) {
+  const rows = test.trials.map((t, i) => {
+    const passed = trialPassed(test, t);
+    const result = test.kind === 'passfail'
+      ? (t.pass === true ? 'Pass' : t.pass === false ? 'Fail' : '')
+      : (t.value === null || t.value === '' ? '' : `${t.value}${test.unit ? ` ${test.unit}` : ''}`);
+    return { n: i + 1, result, mark: passed === true ? '✓' : passed === false ? '✗' : '', passed };
+  });
+  const minRow = px(30);
+  let groups = 1;
+  let rowH = Math.min(px(48), box.h / (rows.length + 1));
+  if (rowH < minRow && rows.length > 1) {
+    groups = 2;
+    rowH = Math.min(px(48), box.h / (Math.ceil(rows.length / 2) + 1));
+  }
+  const perGroup = Math.ceil(rows.length / groups);
+  const groupW = (box.w - px(24) * (groups - 1)) / groups;
+  const font = Math.max(10, Math.round(rowH * 0.55));
+  for (let g = 0; g < groups; g++) {
+    const gx = box.x + g * (groupW + px(24));
+    const cols = [gx + px(10), gx + groupW * 0.35, gx + groupW - px(40)];
+    ctx.fillStyle = '#F3F4F6';
+    ctx.fillRect(gx, box.y, groupW, rowH);
+    ctx.fillStyle = color;
+    ctx.font = `700 ${font}px ${FONT}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('Trial', cols[0], box.y + rowH / 2);
+    ctx.fillText(test.kind === 'passfail' ? 'Result' : (test.metric || 'Result'), cols[1], box.y + rowH / 2);
+    rows.slice(g * perGroup, (g + 1) * perGroup).forEach((r, i) => {
+      const ry = box.y + rowH * (i + 1);
+      if (ry + rowH > box.y + box.h + 1) return;
+      ctx.strokeStyle = '#E5E7EB';
+      ctx.beginPath(); ctx.moveTo(gx, ry); ctx.lineTo(gx + groupW, ry); ctx.stroke();
+      ctx.fillStyle = color;
+      ctx.font = `400 ${font}px ${FONT}`;
+      ctx.fillText(String(r.n), cols[0], ry + rowH / 2);
+      ctx.fillText(r.result, cols[1], ry + rowH / 2);
+      ctx.fillStyle = r.passed === true ? PASS : FAIL;
+      ctx.font = `700 ${font}px ${FONT}`;
+      ctx.fillText(r.mark, cols[2], ry + rowH / 2);
+    });
+  }
+  ctx.textBaseline = 'top';
+}
+
+// A picture of just the test results (for the editable slides).
+export async function renderTestImage(test, width = 1600, height = 900) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, width, height);
+  drawTestBlock(ctx, { x: 40, y: 30, w: width - 80, h: height - 60 }, test, width / 1920 * 1.2);
+  return canvasToBlob(canvas, 'image/png');
+}
+
 // A made-up entry, so previews work before there are any entries.
 let samplePhotos = null;
 export async function sampleEntry(type, author) {
@@ -494,6 +754,8 @@ export async function sampleEntry(type, author) {
     id: 'sample',
     type,
     stage: 'build',
+    subsystem: 'Intake',
+    match: type === 'competition' ? { event: 'Regionals', partners: '1234A', our: 34, their: 20, auton: 'worked' } : null,
     photos: [
       { photo: samplePhotos[0], drawing: null, note: 'The intake before the change.' },
       { photo: samplePhotos[1], drawing: null, note: 'Moved 2 holes forward.' },

@@ -19,7 +19,7 @@ function exportDefaults(accent, showMatch) {
   return {
     size: 'slide',
     format: 'standard',
-    fields: { caption: true, datetime: true, author: true, stage: true, match: showMatch },
+    fields: { caption: true, datetime: true, author: true, stage: true, match: showMatch, subsystem: true, witness: true, test: true },
     accent,
     photosPerPage: 1,
     captionPages: 'first',
@@ -32,6 +32,8 @@ const DEFAULTS = {
   defaultType: 'build',
   lastStage: null,
   lastShareTeam: null,     // the team the last entry was shared with
+  lastEvent: '',           // the competition event of the last match entry
+  lastBackup: null,        // when the last backup file was made (backup.js)
   theme: 'classic',        // color theme id (js/themes.js), 'auto' or 'custom'
   customTheme: { bg: '#1B1D22', surface: '#25282F', text: '#F1F2F4', accent: '#F59E0B' },
   export: {

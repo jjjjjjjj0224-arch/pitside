@@ -64,6 +64,32 @@ alter table public.entries drop constraint if exists entries_photos_max;
 alter table public.entries add constraint entries_photos_max
   check (jsonb_typeof(photos) = 'array' and jsonb_array_length(photos) <= 10);
 
+-- v1.8: subsystem (Drivetrain, Intake...), test results, match details, and a witness.
+--   test_data:  { kind, metric, unit, goal, better, trials: [{ value, pass }] }
+--   match_data: { event, partners, our, their, auton }
+-- witnessed_* can only be set through witness_entry() (see the trigger below).
+alter table public.entries add column if not exists subsystem text check (char_length(subsystem) <= 40);
+alter table public.entries add column if not exists test_data jsonb;
+alter table public.entries add column if not exists match_data jsonb;
+alter table public.entries add column if not exists witnessed_by text;
+alter table public.entries add column if not exists witnessed_by_id uuid;
+alter table public.entries add column if not exists witnessed_at timestamptz;
+alter table public.entries drop constraint if exists entries_extra_size;
+alter table public.entries add constraint entries_extra_size
+  check (coalesce(octet_length(test_data::text), 0) <= 20000 and coalesce(octet_length(match_data::text), 0) <= 2000);
+
+-- v1.8: comments on shared entries.
+create table if not exists public.entry_comments (
+  id         uuid primary key default gen_random_uuid(),
+  entry_id   uuid not null references public.entries (id) on delete cascade,
+  team_id    uuid not null references public.teams (id) on delete cascade,
+  user_id    uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  author     text not null check (char_length(author) between 1 and 60),
+  body       text not null check (char_length(body) between 1 and 1000),
+  created_at timestamptz not null default now()
+);
+create index if not exists entry_comments_entry on public.entry_comments (entry_id, created_at);
+
 -- Wrong join codes, to slow down anyone guessing codes.
 create table if not exists public.join_attempts (
   id      bigint generated always as identity primary key,
@@ -114,6 +140,7 @@ alter table public.teams         enable row level security;
 alter table public.team_members  enable row level security;
 alter table public.entries       enable row level security;
 alter table public.join_attempts enable row level security;   -- no rules = nobody can read it directly
+alter table public.entry_comments enable row level security;
 
 -- teams
 drop policy if exists "Members see their team" on public.teams;
@@ -156,9 +183,106 @@ create policy "Authors or owner delete entries" on public.entries
   for delete to authenticated
   using (user_id = auth.uid() or public.is_team_owner(team_id::text));
 
+-- comments: members read them; adding goes through add_comment(); you delete your
+-- own, the owner deletes any.
+drop policy if exists "Members see comments" on public.entry_comments;
+create policy "Members see comments" on public.entry_comments
+  for select to authenticated using (public.is_team_member(team_id::text));
+
+drop policy if exists "Authors or owner delete comments" on public.entry_comments;
+create policy "Authors or owner delete comments" on public.entry_comments
+  for delete to authenticated
+  using (user_id = auth.uid() or public.is_team_owner(team_id::text));
+
+-- Witness fields are only changed by witness_entry(). Any other change to what the
+-- entry says (caption, photos, data...) clears the witness, since they signed the old
+-- version. Moving an entry to another team drops its comments.
+create or replace function public.entries_guard()
+returns trigger
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  witnessing boolean := coalesce(current_setting('pitside.witnessing', true), '') = 'on';
+begin
+  if tg_op = 'INSERT' then
+    if not witnessing then
+      new.witnessed_by := null; new.witnessed_by_id := null; new.witnessed_at := null;
+    end if;
+    return new;
+  end if;
+  if not witnessing then
+    new.witnessed_by := old.witnessed_by;
+    new.witnessed_by_id := old.witnessed_by_id;
+    new.witnessed_at := old.witnessed_at;
+    if (new.caption, new.photos, new.stage, new.subsystem, new.test_data, new.match_data, new.type, new.match_number)
+       is distinct from
+       (old.caption, old.photos, old.stage, old.subsystem, old.test_data, old.match_data, old.type, old.match_number) then
+      new.witnessed_by := null; new.witnessed_by_id := null; new.witnessed_at := null;
+    end if;
+  end if;
+  if new.team_id <> old.team_id then
+    delete from public.entry_comments where entry_id = old.id;
+  end if;
+  return new;
+end;
+$$;
+drop trigger if exists entries_guard on public.entries;
+create trigger entries_guard before insert or update on public.entries
+  for each row execute function public.entries_guard();
+
 -- =====================================================================
 -- Team actions (called from the app)
 -- =====================================================================
+
+-- Sign (or take back your signature on) a teammate's entry, as its witness.
+-- You can't witness your own entry; someone else's signature can't be replaced.
+create or replace function public.witness_entry(entry uuid, sign boolean)
+returns public.entries
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  e public.entries;
+  my_name text;
+begin
+  if not public.is_full_user() then raise exception 'need_google_sign_in'; end if;
+  select * into e from public.entries where id = entry;
+  if not found or not public.is_team_member(e.team_id::text) then raise exception 'not_found'; end if;
+  if e.user_id = auth.uid() then raise exception 'own_entry'; end if;
+  select display_name into my_name from public.team_members where team_id = e.team_id and user_id = auth.uid();
+  perform set_config('pitside.witnessing', 'on', true);
+  if sign then
+    if e.witnessed_by_id is not null and e.witnessed_by_id <> auth.uid() then raise exception 'already_witnessed'; end if;
+    update public.entries set witnessed_by = my_name, witnessed_by_id = auth.uid(), witnessed_at = now()
+    where id = entry returning * into e;
+  elsif e.witnessed_by_id = auth.uid() then
+    update public.entries set witnessed_by = null, witnessed_by_id = null, witnessed_at = null
+    where id = entry returning * into e;
+  end if;
+  perform set_config('pitside.witnessing', '', true);
+  return e;
+end;
+$$;
+
+-- Comment on a shared entry, under your team name.
+create or replace function public.add_comment(entry uuid, comment text)
+returns public.entry_comments
+language plpgsql security definer set search_path = ''
+as $$
+declare
+  e public.entries;
+  my_name text;
+  c public.entry_comments;
+begin
+  if not public.is_full_user() then raise exception 'need_google_sign_in'; end if;
+  select * into e from public.entries where id = entry;
+  if not found or not public.is_team_member(e.team_id::text) then raise exception 'not_found'; end if;
+  select display_name into my_name from public.team_members where team_id = e.team_id and user_id = auth.uid();
+  insert into public.entry_comments (entry_id, team_id, user_id, author, body)
+  values (entry, e.team_id, auth.uid(), my_name, trim(comment))
+  returning * into c;
+  return c;
+end;
+$$;
 
 -- Random 6-character code without look-alike characters (no 0/O, 1/I/L).
 create or replace function public.make_join_code()
@@ -307,6 +431,11 @@ revoke execute on function public.join_team(text, text)    from public, anon;
 revoke execute on function public.leave_team(uuid)         from public, anon;
 revoke execute on function public.reset_join_code(uuid)    from public, anon;
 revoke execute on function public.set_display_name(text)   from public, anon;
+revoke execute on function public.witness_entry(uuid, boolean) from public, anon;
+revoke execute on function public.add_comment(uuid, text)   from public, anon;
+revoke execute on function public.entries_guard()           from public, anon, authenticated;
+grant  execute on function public.witness_entry(uuid, boolean) to authenticated;
+grant  execute on function public.add_comment(uuid, text)   to authenticated;
 revoke execute on function public.make_join_code()         from public, anon, authenticated;
 grant  execute on function public.create_team(text, text)  to authenticated;
 grant  execute on function public.join_team(text, text)    to authenticated;

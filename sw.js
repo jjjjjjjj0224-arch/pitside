@@ -4,7 +4,7 @@
 //
 // When you change any app file, bump VERSION so phones download the new files.
 
-const VERSION = 'pitside-v1.7.1';
+const VERSION = 'pitside-v1.8.0';
 
 // Every file the app needs. Paths are relative to this file, so the app also
 // works from a sub-folder (for example GitHub Pages: /your-repo/).
@@ -24,6 +24,14 @@ const APP_SHELL = [
   './js/render.js',
   './js/zip.js',
   './js/pptx.js',
+  './js/entrydata.js',
+  './js/entryextras.js',
+  './js/backup.js',
+  './js/meetings.js',
+  './js/gslides.js',
+  './js/screens/tracker.js',
+  './js/screens/season.js',
+  './js/screens/meetings.js',
   './js/exporter.js',
   './js/config.js',
   './js/cloud.js',

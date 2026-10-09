@@ -5,8 +5,10 @@ import { renderEntryImage, pageCountFor } from './render.js';
 import { getFormat } from './templates.js';
 import { makeZip } from './zip.js';
 import { buildPptx } from './pptx.js';
+import { weekSlide, entriesInWeek } from './meetings.js';
 import { photosOf, flattenPhoto, loadImage, canvasToBlob } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
+import { matchSummary, testSummary, testStats, witnessText } from './entrydata.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -99,17 +101,25 @@ function csvDate(iso) {
 
 // imageNames: entry id -> the image files made for it.
 function buildCsv(entries, names, includePhotos, imageNames) {
-  const header = ['date', 'author', 'type', 'stage', 'match_number', 'caption', 'photo_notes', 'image_file', 'audio_file', 'photo_files'];
+  const header = ['date', 'author', 'type', 'stage', 'subsystem', 'match_number', 'match_result', 'caption', 'photo_notes',
+    'test', 'test_average', 'test_success_rate', 'witnessed_by', 'image_file', 'audio_file', 'photo_files'];
   const rows = entries.map((e) => {
     const base = names.get(e.id);
+    const test = testStats(e.testData);
     return [
       csvDate(e.createdAt),
       e.author,
       TYPE_LABELS[e.type] || e.type,
       e.stage ? STAGE_LABELS[e.stage] : '',
+      e.subsystem || '',
       e.matchNumber || '',
+      matchSummary(e.match),
       e.caption || '',
       photosOf(e).map((p, i) => ((p.note || '').trim() ? `Photo ${i + 1}: ${p.note.trim()}` : '')).filter(Boolean).join('; '),
+      testSummary(e.testData),
+      test && test.avg !== null ? test.avg : '',
+      test && test.rate !== null ? `${test.rate}%` : '',
+      witnessText(e),
       (imageNames.get(e.id) || []).join('; '),
       audioFileName(e, base) || '',
       includePhotos ? photosOf(e).map((_, i, all) => `photos/${photoFileName(base, i, all.length)}`).join('; ') : '',
@@ -121,9 +131,12 @@ function buildCsv(entries, names, includePhotos, imageNames) {
 
 // Build the export ZIP: the PNG pages of each entry, each voice note, entries.csv,
 // (includePhotos) a photos/ folder with the full-size photos for the notebook, and
-// (slides) slides.pptx: one editable slide per entry (see pptx.js).
+// (slides) slides.pptx: one editable slide per entry (see pptx.js), and (weeks) one
+// summary slide per week of the meeting log. keep.pptx gets the slides file too.
 // onProgress(done, total) is called as each entry's images are made.
-export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true, format = 'auto', slides = false } = {}) {
+export async function buildExportZip(entries, settings, onProgress = () => {}, {
+  includePhotos = true, format = 'auto', slides = false, weeks = [], keep = {},
+} = {}) {
   const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
@@ -147,7 +160,13 @@ export async function buildExportZip(entries, settings, onProgress = () => {}, {
     onProgress(i + 1, sorted.length);
   }
   files.push({ name: 'entries.csv', data: buildCsv(sorted, names, includePhotos, imageNames), date: new Date() });
-  if (slides) files.push({ name: 'slides.pptx', data: await buildPptx(sorted, settings), date: new Date() });
+  if (slides) {
+    keep.pptx = await buildPptx(sorted, settings);
+    files.push({ name: 'slides.pptx', data: keep.pptx, date: new Date() });
+  }
+  for (const w of weeks) {
+    files.push({ name: `weeks/week_of_${w.start}.png`, data: await weekSlide(w.start, w.meetings, entriesInWeek(sorted, w.start)), date: new Date() });
+  }
   return makeZip(files);
 }
 

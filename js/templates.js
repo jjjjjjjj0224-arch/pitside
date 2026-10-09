@@ -23,7 +23,8 @@ export const STANDARD = 'standard';
 
 export const BOX_KINDS = [
   { kind: 'photo', label: 'Photo' },
-  { kind: 'title', label: 'Title (stage or type)' },
+  { kind: 'title', label: 'Title (stage - subsystem)' },
+  { kind: 'subsystem', label: 'Subsystem' },
   { kind: 'label', label: 'Entry type' },
   { kind: 'datetime', label: 'Date and time' },
   { kind: 'date', label: 'Date only' },
@@ -31,6 +32,11 @@ export const BOX_KINDS = [
   { kind: 'author', label: 'Author' },
   { kind: 'stage', label: 'Design stage' },
   { kind: 'match', label: 'Match number' },
+  { kind: 'matchResult', label: 'Match result' },
+  { kind: 'testData', label: 'Test results (table + chart)' },
+  { kind: 'testSummary', label: 'Test summary line' },
+  { kind: 'witness', label: 'Witness name' },
+  { kind: 'witnessDate', label: 'Witness date' },
   { kind: 'caption', label: 'Caption' },
   { kind: 'voice', label: 'Voice note line' },
   { kind: 'photoNumber', label: 'Photo number' },
@@ -122,7 +128,7 @@ let nextId = Date.now();
 // A new box with sensible defaults (the editor then lets you move and style it).
 export function newBox(kind, x = 0.3, y = 0.3) {
   const isPhoto = kind === 'photo';
-  const isCaption = kind === 'caption';
+  const isCaption = kind === 'caption' || kind === 'testData';
   return {
     id: `b${nextId++}`,
     kind,

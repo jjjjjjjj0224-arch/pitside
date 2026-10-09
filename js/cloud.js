@@ -295,7 +295,10 @@ export function friendlyError(err) {
   if (/redirect|not allowed/i.test(text)) {
     return 'Supabase doesn\'t allow this app address yet. Add it in Authentication > URL Configuration.';
   }
-  if (/'photos' column|column .*photos/i.test(text)) {
+  if (/own_entry/.test(text)) return 'You can\'t witness your own entry. Ask a teammate.';
+  if (/already_witnessed/.test(text)) return 'Someone else already witnessed this entry.';
+  if (/not_found/.test(text)) return 'That entry isn\'t shared with your team any more.';
+  if (/'(photos|subsystem|test_data|match_data)' column|column .*(photos|subsystem|test_data|match_data)|entry_comments|witness_entry|add_comment/i.test(text)) {
     return 'The team database needs a quick update: in Supabase, run supabase/schema.sql again.';
   }
   if (err.status === 429) return 'Too many sign-ins from this network. Try again in a while.';

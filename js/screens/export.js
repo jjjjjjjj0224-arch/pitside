@@ -12,12 +12,15 @@ import { listFormats, formatName } from '../templates.js';
 import { sampleEntry } from '../render.js';
 import { openViewer } from '../viewer.js';
 import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast, UrlBag } from '../ui.js';
+import { listMeetings, meetingsByWeek, toDay } from '../meetings.js';
+import { googleSlidesAvailable, prepareGoogle, getGoogleToken, uploadToGoogleSlides, googleError } from '../gslides.js';
 
 // Keep the user's choices while the app is open.
 const choice = {
   source: 'mine',    // 'mine', or a team id (that whole team's shared entries)
   includePhotos: true,   // add a photos/ folder with the full-size photos
   slides: true,      // add slides.pptx: one editable slide per entry (move photos and text yourself)
+  weeks: true,       // add one summary slide per week of the meeting log (in the date range)
   format: 'auto',    // 'auto' (each type's own format), 'standard' (PitSide layout) or a format id
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
@@ -66,6 +69,10 @@ export async function renderExport(el) {
   // "Build: 96969Y Build" for each type, for the Auto note.
   const typeFormatNames = Object.fromEntries(await Promise.all(TYPES.map(async (t) => [t, await formatName(settings.export[t].format)])));
   const urls = new UrlBag();
+  const meetings = await listMeetings();
+  let keep = {};     // the last export's slides.pptx (for Google Slides)
+  // Google's sign-in script, loaded now so its popup can open right from a tap.
+  if (googleSlidesAvailable() && navigator.onLine) prepareGoogle().catch((err) => console.warn('Google not loaded', err));
   if (!choice.from) {
     const today = new Date();
     choice.to = toInputDate(today);
@@ -132,6 +139,11 @@ export async function renderExport(el) {
           each one separate so you can move them around. Google Slides: File &gt; Import slides.</span>
       </label>
 
+      <label class="option" data-weeks-option hidden>
+        <input type="checkbox" data-weeks>
+        <span>Weekly summary slides from the meeting log (one per week in these dates)</span>
+      </label>
+
       <p class="match-count" aria-live="polite"></p>
       <p class="form-error" role="alert" hidden></p>
 
@@ -145,6 +157,11 @@ export async function renderExport(el) {
           <button type="button" class="btn btn-primary" data-act="share-zip" hidden>Share ZIP</button>
           <button type="button" class="btn btn-secondary" data-act="download-zip">Download ZIP</button>
         </div>
+        <div class="gslides" hidden>
+          <button type="button" class="btn btn-secondary btn-block" data-act="gslides">Open the slides in Google Slides</button>
+          <p class="hint gslides-text">Puts the editable slides in your Google Drive as a Google Slides file. PitSide only gets access to files it creates.</p>
+          <a class="btn btn-primary btn-block" data-gslides-link target="_blank" rel="noopener" hidden>Open in Google Slides</a>
+        </div>
       </section>
     </main>`;
 
@@ -155,6 +172,13 @@ export async function renderExport(el) {
   const result = $('.export-result');
   let zipFile = null;
   let working = false;
+
+  // Weeks of the meeting log inside the chosen dates: [{ start, meetings }]
+  function weeksInRange() {
+    const { from, to } = rangeBounds();
+    const inRange = meetings.filter((m) => (!from || m.date >= toDay(from)) && (!to || m.date <= toDay(to)));
+    return meetingsByWeek(inRange);
+  }
 
   function matching() {
     const { from, to } = rangeBounds();
@@ -242,6 +266,8 @@ export async function renderExport(el) {
     el.querySelectorAll('input[name="source"]').forEach((r) => { r.checked = r.value === choice.source; });
     $('[data-include-photos]').checked = choice.includePhotos;
     $('[data-slides]').checked = choice.slides;
+    $('[data-weeks]').checked = choice.weeks;
+    $('[data-weeks-option]').hidden = !weeksInRange().length;
     $('.custom-dates').hidden = choice.range !== 'custom';
     $('[data-date="from"]').value = choice.from;
     $('[data-date="to"]').value = choice.to;
@@ -321,9 +347,13 @@ export async function renderExport(el) {
       return;
     }
     try {
+      keep = {};
       const zip = await buildExportZip(list, settings, (done, total) => {
         exportBtn.textContent = `Making images… ${done} of ${total}`;
-      }, { includePhotos: choice.includePhotos, format: choice.format, slides: choice.slides });
+      }, {
+        includePhotos: choice.includePhotos, format: choice.format, slides: choice.slides, keep,
+        weeks: choice.weeks ? weeksInRange() : [],
+      });
       const name = `pitside_export_${toInputDate(new Date())}.zip`;
       zipFile = new File([zip], name, { type: 'application/zip' });
       const voiceCount = list.filter((e) => e.audio).length;
@@ -335,6 +365,9 @@ export async function renderExport(el) {
         + `${voiceCount ? ` · ${voiceCount} voice ${voiceCount === 1 ? 'note' : 'notes'}` : ''}`
         + `${choice.slides ? ' · slides.pptx' : ''} · ${formatBytes(zip.size)}`;
       result.hidden = false;
+      $('.gslides').hidden = !(choice.slides && keep.pptx && googleSlidesAvailable());
+      $('[data-gslides-link]').hidden = true;
+      $('[data-act="gslides"]').hidden = false;
       const shareable = canShareFile(zipFile);
       $('[data-act="share-zip"]').hidden = !shareable;
       if (!shareable) {
@@ -365,6 +398,38 @@ export async function renderExport(el) {
   });
   $('[data-act="download-zip"]').addEventListener('click', () => {
     if (zipFile) downloadBlob(zipFile, zipFile.name);
+  });
+
+  // Send slides.pptx to Google Slides (asks Google for permission the first time).
+  $('[data-act="gslides"]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const text = $('.gslides-text');
+    if (!keep.pptx) return;
+    btn.disabled = true;
+    try {
+      if (!navigator.onLine) throw new Error('offline');
+      await prepareGoogle();
+      btn.textContent = 'Waiting for Google…';
+      const token = await getGoogleToken();
+      btn.textContent = 'Uploading…';
+      const { link } = await uploadToGoogleSlides(keep.pptx, `PitSide entries ${toInputDate(new Date())}`, token);
+      const a = $('[data-gslides-link]');
+      a.href = link;
+      a.hidden = false;
+      btn.hidden = true;
+      text.textContent = 'Done. It\'s in your Google Drive. Open it, then copy the slides you want into your notebook.';
+      a.focus();
+    } catch (err) {
+      console.warn('Google Slides failed', err);
+      text.textContent = googleError(err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Open the slides in Google Slides';
+    }
+  });
+  $('[data-weeks]').addEventListener('change', (e) => {
+    choice.weeks = e.target.checked;
+    update();
   });
 
   update();

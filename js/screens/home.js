@@ -1,4 +1,5 @@
-// Home: New entry button, team status, Mine/Team switch, filter chips and the list.
+// Home: New entry button, tools (tracker, season, meetings), team status, Mine/Team
+// switch, search and filters, and the list.
 
 import { getAllEntries, getAllTeamEntries } from '../db.js';
 import { getSettings } from '../settings.js';
@@ -12,6 +13,16 @@ import { TYPES, TYPE_LABELS, STAGE_LABELS, esc, formatDateTime, typeBadge, UrlBa
 let filter = 'all';
 let view = 'mine';     // 'mine' or 'team'
 let shownTeam = null;  // which team's entries the Team view shows
+const query = { text: '', subsystem: '', stage: '', author: '', from: '', to: '' };
+
+// Other screens can open Home with filters set (e.g. the tracker: "Intake, Test").
+export function setHomeFilters(changes) {
+  const { view: v, team, ...rest } = changes;
+  Object.assign(query, { text: '', subsystem: '', stage: '', author: '', from: '', to: '' }, rest);
+  if (v) view = v;
+  if (team) shownTeam = team;
+  filter = 'all';
+}
 
 export async function renderHome(el) {
   const urls = new UrlBag();
@@ -29,13 +40,25 @@ export async function renderHome(el) {
     </header>
     <main class="page">
       <a class="btn btn-primary btn-xl btn-block" href="#/new">New entry</a>
+      <nav class="tool-row" aria-label="Tools">
+        <a class="btn btn-secondary" href="#/tracker">Tracker</a>
+        <a class="btn btn-secondary" href="#/season">Season</a>
+        <a class="btn btn-secondary" href="#/meetings">Meetings</a>
+      </nav>
       <a class="team-card" href="#/team" hidden></a>
+      <a class="backup-nudge" href="#/settings" hidden></a>
       <div class="view-switch" role="group" aria-label="Whose entries" hidden>
         <button type="button" class="seg-btn" data-view="mine">Mine</button>
         <button type="button" class="seg-btn" data-view="team">Team</button>
       </div>
       <div class="chips team-picker" role="group" aria-label="Which team" hidden></div>
-      <div class="chips" role="group" aria-label="Show entries">
+      <div class="search-row">
+        <label class="sr-only" for="home-search">Search entries</label>
+        <input id="home-search" class="input" type="search" placeholder="Search captions, notes, subsystems…" autocomplete="off">
+        <button type="button" class="btn btn-secondary" data-act="filters" aria-expanded="false">Filters</button>
+      </div>
+      <div class="filter-panel" hidden></div>
+      <div class="chips type-chips" role="group" aria-label="Show entries">
         ${['all', ...TYPES].map((t) => `
           <button type="button" class="chip" data-filter="${t}">${t === 'all' ? 'All' : TYPE_LABELS[t]}</button>`).join('')}
       </div>
@@ -86,14 +109,27 @@ export async function renderHome(el) {
     teamEntries = getTeams().length ? await getAllTeamEntries() : [];
   }
 
+  // "Back up your entries" after 2 weeks without a backup (only once there's something to lose).
+  function drawBackupNudge() {
+    const nudge = el.querySelector('.backup-nudge');
+    const last = settings.lastBackup ? new Date(settings.lastBackup) : null;
+    const days = last ? Math.floor((Date.now() - last) / 86400000) : null;
+    nudge.hidden = entries.length < 5 || (days !== null && days < 14);
+    nudge.textContent = last
+      ? `Last backup was ${days} days ago. Tap to back up your entries.`
+      : 'Your entries are only on this phone. Tap to make a backup.';
+  }
+
   function draw() {
+    drawBackupNudge();
     drawTeamCard();
     drawTeamPicker();
     el.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === filter)));
     el.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === view)));
 
     const source = view === 'team' ? teamEntries.filter((e) => e.teamId === shownTeam) : entries;
-    const shown = filter === 'all' ? source : source.filter((e) => e.type === filter);
+    drawFilterPanel(source);
+    const shown = source.filter((e) => (filter === 'all' || e.type === filter) && matchesQuery(e));
     const localThumbs = new Map(entries.map((e) => [e.id, e.thumb]));
 
     urls.revokeAll();
@@ -101,7 +137,9 @@ export async function renderHome(el) {
       ? entryCard(e, settings, urls, { team: true, thumb: e.thumb || localThumbs.get(e.id) })
       : entryCard(e, settings, urls, { team: false, thumb: e.thumb, teams: getTeams() }))).join('');
 
-    if (view === 'team') {
+    if (source.length && filtersOn()) {
+      empty.textContent = 'No entries match. Try other words, or clear the filters.';
+    } else if (view === 'team') {
       empty.textContent = source.length === 0
         ? 'No team entries yet. Entries your teammates share show up here.'
         : `No ${TYPE_LABELS[filter]} entries from the team yet.`;
@@ -114,7 +152,92 @@ export async function renderHome(el) {
     count.textContent = shown.length ? `${shown.length} ${shown.length === 1 ? 'entry' : 'entries'}` : '';
   }
 
-  el.querySelector('.chips').addEventListener('click', (e) => {
+  // ---- Search and filters ----
+
+  const searchEl = el.querySelector('#home-search');
+  const filterBtn = el.querySelector('[data-act="filters"]');
+  const filterPanel = el.querySelector('.filter-panel');
+  searchEl.value = query.text;
+  const filtersOn = () => Boolean(query.text.trim() || query.subsystem || query.stage || query.author || query.from || query.to);
+
+  // Everything you can search for in an entry, lower case.
+  function searchText(e) {
+    const notes = (e.paths && e.paths.photos ? e.paths.photos : photosOf(e)).map((p) => p.note || '');
+    const m = e.match || {};
+    const t = e.testData || {};
+    return [e.caption, e.subsystem, e.author, e.matchNumber, m.event, m.partners, t.metric, ...notes]
+      .filter(Boolean).join(' ').toLowerCase();
+  }
+  function matchesQuery(e) {
+    if (query.subsystem && (e.subsystem || '').toLowerCase() !== query.subsystem.toLowerCase()) return false;
+    if (query.stage && e.stage !== query.stage) return false;
+    if (query.author && e.author !== query.author) return false;
+    if (query.from || query.to) {
+      const d = new Date(e.createdAt);
+      const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (query.from && day < query.from) return false;
+      if (query.to && day > query.to) return false;
+    }
+    const words = query.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length) {
+      const hay = searchText(e);
+      if (!words.every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  }
+
+  // Choices come from the entries in view (subsystems and people that exist).
+  function drawFilterPanel(source) {
+    const subsystems = [...new Set(source.map((e) => e.subsystem).filter(Boolean))].sort();
+    const people = [...new Set(source.map((e) => e.author).filter(Boolean))].sort();
+    const select = (key, label, options) => `
+      <label class="mini-field"><span class="label-small">${label}</span>
+        <select class="input" data-q="${key}">
+          <option value="">Any</option>
+          ${options.map(([v, text]) => `<option value="${esc(v)}" ${query[key] === v ? 'selected' : ''}>${esc(text)}</option>`).join('')}
+        </select></label>`;
+    filterPanel.innerHTML = `
+      <div class="two-col">
+        ${select('subsystem', 'Subsystem', subsystems.map((s) => [s, s]))}
+        ${select('stage', 'Stage', Object.entries(STAGE_LABELS))}
+      </div>
+      <div class="two-col">
+        <label class="mini-field"><span class="label-small">From</span><input class="input" type="date" data-q="from" value="${esc(query.from)}"></label>
+        <label class="mini-field"><span class="label-small">To</span><input class="input" type="date" data-q="to" value="${esc(query.to)}"></label>
+      </div>
+      ${people.length > 1 ? select('author', 'Person', people.map((p) => [p, p])) : ''}
+      <button type="button" class="btn btn-ghost btn-small" data-act="clear-filters">Clear filters</button>`;
+    filterBtn.textContent = query.subsystem || query.stage || query.author || query.from || query.to ? 'Filters •' : 'Filters';
+  }
+
+  let searchTimer;
+  searchEl.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { query.text = searchEl.value; draw(); }, 150);
+  });
+  filterBtn.addEventListener('click', () => {
+    filterPanel.hidden = !filterPanel.hidden;
+    filterBtn.setAttribute('aria-expanded', String(!filterPanel.hidden));
+  });
+  filterPanel.addEventListener('change', (e) => {
+    const key = e.target.dataset.q;
+    if (!key) return;
+    query[key] = e.target.value;
+    draw();
+  });
+  filterPanel.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-act="clear-filters"]')) return;
+    Object.assign(query, { text: '', subsystem: '', stage: '', author: '', from: '', to: '' });
+    searchEl.value = '';
+    draw();
+  });
+  // Opened with filters already set (from the tracker): show them.
+  if (query.subsystem || query.stage || query.author || query.from || query.to) {
+    filterPanel.hidden = false;
+    filterBtn.setAttribute('aria-expanded', 'true');
+  }
+
+  el.querySelector('.type-chips').addEventListener('click', (e) => {
     const chip = e.target.closest('[data-filter]');
     if (!chip) return;
     filter = chip.dataset.filter;
@@ -185,6 +308,8 @@ function entryCard(entry, settings, urls, { team, thumb, teams = [] }) {
           <div class="entry-tags">
             ${typeBadge(entry.type, accent)}
             ${entry.stage ? `<span class="stage-tag">${esc(STAGE_LABELS[entry.stage])}</span>` : ''}
+            ${entry.subsystem ? `<span class="stage-tag">${esc(entry.subsystem)}</span>` : ''}
+            ${entry.witness ? '<span class="share-tag">Witnessed</span>' : ''}
             ${entry.matchNumber ? `<span class="stage-tag">Match ${esc(entry.matchNumber)}</span>` : ''}
             ${photoCount > 1 ? `<span class="stage-tag">${photoCount} photos</span>` : ''}
             ${shareTag}

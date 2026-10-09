@@ -7,7 +7,9 @@ import { getSettings } from '../settings.js';
 import { go, goBack } from '../router.js';
 import { getTeamById } from '../team.js';
 import { table, files, friendlyError, getAccount } from '../cloud.js';
-import { loadTeamFiles, upgradeTeamRecord, teamEntryPaths } from '../sync.js';
+import { loadTeamFiles, upgradeTeamRecord, teamEntryPaths, witnessEntry } from '../sync.js';
+import { extrasHtml, mountExtras, commentsHtml, mountComments } from '../entryextras.js';
+import { witnessText } from '../entrydata.js';
 import { galleryHtml, mountGallery } from '../gallery.js';
 import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
@@ -49,6 +51,7 @@ export async function renderTeamEntry(el, id) {
       <div class="detail-tags">
         ${typeBadge(rec.type, settings.export[rec.type].accent)}
         ${rec.stage ? `<span class="stage-tag">Stage: ${esc(STAGE_LABELS[rec.stage])}</span>` : ''}
+        ${rec.subsystem ? `<span class="stage-tag">${esc(rec.subsystem)}</span>` : ''}
         ${rec.matchNumber ? `<span class="stage-tag">Match ${esc(rec.matchNumber)}</span>` : ''}
       </div>
 
@@ -59,6 +62,9 @@ export async function renderTeamEntry(el, id) {
         </div>` : ''}
 
       ${rec.caption ? `<p class="detail-caption">${esc(rec.caption)}</p>` : '<p class="muted">No caption</p>'}
+
+      ${extrasHtml(rec, { witnessNote: 'Not witnessed yet.' })}
+      ${isMine ? '' : '<button type="button" class="btn btn-secondary btn-block" data-act="witness" hidden></button>'}
 
       <dl class="detail-meta">
         <div><dt>Author</dt><dd>${esc(rec.author)}</dd></div>
@@ -71,6 +77,7 @@ export async function renderTeamEntry(el, id) {
         <button type="button" class="btn btn-primary" data-act="share">Share</button>
         ${canRemove ? '<button type="button" class="btn btn-danger" data-act="remove">Remove from team</button>' : ''}
       </div>
+      ${commentsHtml()}
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -79,6 +86,47 @@ export async function renderTeamEntry(el, id) {
   // Photos: the small thumbnail shows at once, then the full photos download.
   const photosLoaded = loadTeamFiles(rec, { photos: true }).then((r) => { rec = r; return r.photos; });
   mountGallery(el, { count: photoCount, loadPhotos: () => photosLoaded, base, urls, thumb: rec.thumb });
+
+  mountExtras(el, rec, urls);
+  mountComments(el, { entryId: rec.id, me: account, isOwner: team.role === 'owner' });
+
+  // Witness: sign a teammate's entry (or take your signature back).
+  const witnessBtn = $('[data-act="witness"]');
+  function showWitness() {
+    if (!witnessBtn) return;
+    const w = rec.witness;
+    const mine = w && account && w.userId === account.userId;
+    witnessBtn.hidden = Boolean(w) && !mine;
+    witnessBtn.textContent = mine ? 'Take back my witness signature' : 'Witness this entry';
+    const line = $('.witness-line');
+    const text = witnessText(rec);
+    line.innerHTML = text ? `<strong>${esc(text)}</strong>` : 'Not witnessed yet.';
+  }
+  if (witnessBtn) {
+    witnessBtn.addEventListener('click', async () => {
+      const signing = !rec.witness;
+      if (signing) {
+        const ok = await confirmDialog({
+          title: 'Witness this entry?',
+          message: `You confirm you saw ${rec.author}'s work as written here. Your name and today's date go on the entry. If they edit it later, they'll need a new witness.`,
+          confirmText: 'Witness',
+        });
+        if (!ok) return;
+      }
+      witnessBtn.disabled = true;
+      showError('');
+      try {
+        rec = await witnessEntry(rec, signing);
+        toast(signing ? 'Witnessed' : 'Signature taken back');
+        showWitness();
+      } catch (err) {
+        showError(friendlyError(err));
+      } finally {
+        witnessBtn.disabled = false;
+      }
+    });
+    showWitness();
+  }
 
   // Voice note (downloads on first Play).
   const playBtn = $('[data-act="play"]');

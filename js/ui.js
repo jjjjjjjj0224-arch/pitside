@@ -9,6 +9,9 @@ export const STAGE_LABELS = {
   build: 'Build', test: 'Test', analysis: 'Analysis',
 };
 
+// Robot parts an entry can be about (you can also type your own).
+export const SUBSYSTEMS = ['Drivetrain', 'Intake', 'Lift', 'Scoring', 'Auton', 'Driver control', 'Sensors', 'Electronics', 'Strategy'];
+
 // The 4 accent colors a user can pick for each entry type's export label.
 // All are dark enough to read on white.
 export const ACCENTS = [

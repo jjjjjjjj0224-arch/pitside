@@ -11,8 +11,8 @@
 
 import { makeZip } from './zip.js';
 import { photosOf, flattenPhoto, loadImage } from './image.js';
-import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
-import { captionPoints } from './render.js';
+import { entryTitle, matchSummary, testSummary, testStats, witnessText } from './entrydata.js';
+import { captionPoints, renderTestImage } from './render.js';
 
 const EMU = 914400;                    // EMUs per inch
 const SLIDE_W = 12192000;              // 13.333 in (16:9)
@@ -46,6 +46,13 @@ export async function buildPptx(entries, settings, onProgress = () => {}) {
       const name = `image${imageNo}.jpeg`;
       files.push({ name: `ppt/media/${name}`, data: jpeg });
       images.push({ name, w: img.naturalWidth, h: img.naturalHeight, note: (p.note || '').trim() });
+    }
+    // Test results: their table + chart as one more picture you can move.
+    if (testStats(e.testData)) {
+      imageNo += 1;
+      const name = `image${imageNo}.png`;
+      files.push({ name: `ppt/media/${name}`, data: await renderTestImage(e.testData) });
+      images.push({ name, w: 1600, h: 900, note: '', label: 'Test results' });
     }
     slides.push(slideXml(e, images, settings.export[e.type] || {}));
     onProgress(i + 1, entries.length);
@@ -96,26 +103,31 @@ function slideXml(entry, images, options) {
   const shapes = [];
   const M = 0.4;   // margin, inches
 
-  // Title line: "BUILD · Test · Friday, October 9, 2026 · Yvonne · Q12"
+  // Title line: "Build - Intake  ·  Friday, October 9, 2026  ·  Yvonne  ·  Match Q12"
   const d = new Date(entry.createdAt);
   const title = [
-    (TYPE_LABELS[entry.type] || entry.type).toUpperCase(),
-    entry.stage ? STAGE_LABELS[entry.stage] || entry.stage : '',
+    entryTitle(entry),
     d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }),
     entry.author || '',
-    entry.matchNumber || '',
+    entry.matchNumber ? `Match ${entry.matchNumber}` : '',
   ].filter(Boolean).join('  ·  ');
   shapes.push(textBox(++id, 'Title', { x: M, y: 0.25, w: 13.333 - M * 2, h: 0.6 }, [{ text: title }], { size: 22, bold: true }));
 
-  // Caption on the right (or across the slide when there are no photos).
+  // Details (match result, test summary, witness) and the caption, on the right
+  // (or across the slide when there are no photos).
   const captionArea = images.length
     ? { x: 8.75, y: 1.05, w: 13.333 - 8.75 - M, h: 7.5 - 1.05 - M }
     : { x: M, y: 1.05, w: 13.333 - M * 2, h: 7.5 - 1.05 - M };
+  const details = [matchSummary(entry.match), testSummary(entry.testData), witnessText(entry)].filter(Boolean);
   const caption = (entry.caption || '').trim();
-  if (caption) {
-    const paras = options.bullets
-      ? captionPoints(caption).map((text) => ({ text, bullet: true }))
-      : caption.split(/\r?\n/).map((text) => ({ text }));
+  if (details.length || caption) {
+    const paras = [
+      ...details.map((text) => ({ text, muted: true })),
+      ...(details.length && caption ? [{ text: '' }] : []),
+      ...(!caption ? [] : options.bullets
+        ? captionPoints(caption).map((text) => ({ text, bullet: true }))
+        : caption.split(/\r?\n/).map((text) => ({ text }))),
+    ];
     shapes.push(textBox(++id, 'Caption', captionArea, paras, { size: 16 }));
   }
 
@@ -133,7 +145,7 @@ function slideXml(entry, images, options) {
       const h = im.h * s;
       const r = { x: photoBox.x + (photoBox.w - w) / 2, y: photoBox.y + (photoBox.h - h) / 2, w, h };
       rIds.push(im.name);
-      shapes.push(picture(++id, `Photo ${k + 1}`, `rId${k + 2}`, r));
+      shapes.push(picture(++id, im.label || `Photo ${k + 1}`, `rId${k + 2}`, r));
       if (im.note) {
         shapes.push(textBox(++id, `Photo ${k + 1} note`, { x: cell.x, y: r.y + r.h + 0.03, w: cell.w, h: noteH }, [{ text: im.note }], { size: 12 }));
       }
@@ -167,14 +179,14 @@ function gridCells(box, count, gap, noteH) {
 
 const xfrm = (b) => `<a:xfrm><a:off x="${in2emu(b.x)}" y="${in2emu(b.y)}"/><a:ext cx="${in2emu(b.w)}" cy="${in2emu(b.h)}"/></a:xfrm>`;
 
-// paras: [{ text, bullet }]. The text shrinks to fit when edited (normAutofit).
+// paras: [{ text, bullet, muted }]. The text shrinks to fit when edited (normAutofit).
 function textBox(id, name, box, paras, { size = 16, bold = false } = {}) {
   const body = paras.map((p) => {
     const ppr = p.bullet
       ? '<a:pPr marL="285750" indent="-285750"><a:buFont typeface="Arial"/><a:buChar char="&#8226;"/></a:pPr>'
       : '<a:pPr><a:buNone/></a:pPr>';
     const run = p.text
-      ? `<a:r><a:rPr lang="en-US" sz="${size * 100}"${bold ? ' b="1"' : ''} dirty="0"><a:solidFill><a:srgbClr val="111827"/></a:solidFill></a:rPr><a:t>${xmlEsc(p.text)}</a:t></a:r>`
+      ? `<a:r><a:rPr lang="en-US" sz="${(p.muted ? size - 2 : size) * 100}"${bold ? ' b="1"' : ''} dirty="0"><a:solidFill><a:srgbClr val="${p.muted ? '4B5563' : '111827'}"/></a:solidFill></a:rPr><a:t>${xmlEsc(p.text)}</a:t></a:r>`
       : '';
     return `<a:p>${ppr}${run}<a:endParaRPr lang="en-US" sz="${size * 100}" dirty="0"/></a:p>`;
   }).join('');
@@ -203,6 +215,7 @@ function contentTypes(n) {
     + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
     + '<Default Extension="xml" ContentType="application/xml"/>'
     + '<Default Extension="jpeg" ContentType="image/jpeg"/>'
+    + '<Default Extension="png" ContentType="image/png"/>'
     + `<Override PartName="/ppt/presentation.xml" ContentType="${pml}.presentation.main+xml"/>`
     + `<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="${pml}.slideMaster+xml"/>`
     + `<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="${pml}.slideLayout+xml"/>`

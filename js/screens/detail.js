@@ -10,6 +10,8 @@ import { baseName, renderEntryImages, shareOrDownload } from '../exporter.js';
 import { getTeams } from '../team.js';
 import { queueRemoteDelete } from '../sync.js';
 import { STAGE_LABELS, esc, formatDateTime, typeBadge, confirmDialog, toast, UrlBag } from '../ui.js';
+import { getAccount } from '../cloud.js';
+import { extrasHtml, mountExtras, commentsHtml, mountComments } from '../entryextras.js';
 
 // "Shared with VEX 1234A" / "Waiting to upload to VEX 1234A" / "Only on this phone"
 function shareStatus(entry, teams) {
@@ -36,6 +38,8 @@ export async function renderDetail(el, id) {
   const edited = entry.updatedAt && entry.updatedAt.slice(0, 16) !== entry.createdAt.slice(0, 16);
   const photos = photosOf(entry);
   const base = baseName(entry);
+  // Online in one of my teams? Then it can have comments and a witness.
+  const sharedTeam = entry.remote ? teams.find((t) => t.teamId === entry.remote.teamId) : null;
 
   el.innerHTML = `
     <header class="topbar">
@@ -49,6 +53,7 @@ export async function renderDetail(el, id) {
       <div class="detail-tags">
         ${typeBadge(entry.type, accent)}
         ${entry.stage ? `<span class="stage-tag">Stage: ${esc(STAGE_LABELS[entry.stage])}</span>` : ''}
+        ${entry.subsystem ? `<span class="stage-tag">${esc(entry.subsystem)}</span>` : ''}
         ${entry.matchNumber ? `<span class="stage-tag">Match ${esc(entry.matchNumber)}</span>` : ''}
       </div>
 
@@ -59,6 +64,8 @@ export async function renderDetail(el, id) {
         </div>` : ''}
 
       ${entry.caption ? `<p class="detail-caption">${esc(entry.caption)}</p>` : '<p class="muted">No caption</p>'}
+
+      ${extrasHtml(entry, { witnessNote: sharedTeam ? 'Not witnessed yet. A teammate can witness it from the Team view.' : '' })}
 
       <dl class="detail-meta">
         <div><dt>Author</dt><dd>${esc(entry.author)}</dd></div>
@@ -72,10 +79,15 @@ export async function renderDetail(el, id) {
         <button type="button" class="btn btn-primary" data-act="share">Share</button>
         <button type="button" class="btn btn-danger" data-act="delete">Delete</button>
       </div>
+      ${sharedTeam ? commentsHtml() : ''}
     </main>`;
 
   // Photos with Download buttons.
   mountGallery(el, { count: photos.length, loadPhotos: async () => photos, base, urls });
+  mountExtras(el, entry, urls);
+  if (sharedTeam) {
+    getAccount().then((me) => mountComments(el, { entryId: entry.id, me, isOwner: sharedTeam.role === 'owner' }));
+  }
 
   // Make the slide images now (one per photo), so they're ready the moment
   // Share is tapped (the share sheet must open right after a tap).

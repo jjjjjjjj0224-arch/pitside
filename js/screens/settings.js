@@ -5,7 +5,8 @@ import { getAllEntries, deleteAllEntries, entryBytes, isStoragePersistent } from
 import { getSettings, saveSettings, saveExportOptions } from '../settings.js';
 import { goBack } from '../router.js';
 import { renderEntryImage, sampleEntry } from '../render.js';
-import { audioFileName } from '../exporter.js';
+import { audioFileName, shareOrDownload, canShareFile, downloadBlob } from '../exporter.js';
+import { makeBackup, readBackup, restoreBackup } from '../backup.js';
 import { isCloudConfigured, getAccount } from '../cloud.js';
 import { getTeams, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
@@ -39,7 +40,10 @@ const FIELD_LABELS = [
   ['datetime', 'Date and time'],
   ['author', 'Author'],
   ['stage', 'Stage'],
-  ['match', 'Match number'],
+  ['subsystem', 'Subsystem'],
+  ['match', 'Match details'],
+  ['test', 'Test results (table and chart)'],
+  ['witness', 'Witness'],
 ];
 
 export async function renderSettings(el) {
@@ -132,6 +136,14 @@ export async function renderSettings(el) {
         <h2 class="section-title">Storage</h2>
         <p class="storage-text">Counting…</p>
         <p class="hint persist-text"></p>
+        <h3 class="label-small">Backup</h3>
+        <p class="hint backup-text"></p>
+        <div class="button-row">
+          <button type="button" class="btn btn-primary" data-act="backup">Back up everything</button>
+          <button type="button" class="btn btn-secondary" data-act="restore">Restore a backup</button>
+        </div>
+        <input type="file" accept=".zip,application/zip" data-input="backup" hidden>
+        <p class="form-error backup-error" role="alert" hidden></p>
         <button type="button" class="btn btn-danger btn-block" data-act="delete-all">Delete all entries</button>
       </section>
 
@@ -147,7 +159,7 @@ export async function renderSettings(el) {
         <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
-      <p class="hint center">PitSide v1.7</p>
+      <p class="hint center">PitSide v1.8</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -279,6 +291,85 @@ export async function renderSettings(el) {
     $('[data-act="delete-all"]').disabled = entries.length === 0;
   }
   showStorage();
+
+  // ---- Backup and restore ----
+  const backupError = $('.backup-error');
+  function showBackupText() {
+    const last = settings.lastBackup;
+    $('.backup-text').textContent = `${last ? `Last backup: ${new Date(last).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}. ` : 'No backup yet. '}`
+      + 'Your entries live only on this phone (plus any you share with a team). A backup file has everything: '
+      + 'entries, photos, voice notes, notebook formats and meetings. Save it to Drive or Files.';
+  }
+  showBackupText();
+  $('[data-act="backup"]').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    backupError.hidden = true;
+    try {
+      const { file, counts } = await makeBackup((text) => { btn.textContent = text; });
+      settings = getSettings();
+      showBackupText();
+      btn.textContent = 'Back up everything';
+      const summary = `${counts.entries} entries, ${counts.formats} formats, ${counts.meetings} meetings`;
+      if (canShareFile(file)) {
+        const r = await shareOrDownload(file, 'PitSide backup', { preferDownload: false });
+        if (r === 'retry') { toast('Backup ready. Tap Back up again to save it.'); return; }
+        if (r === 'downloaded' || r === 'shared') toast(`Backup ready: ${summary}`);
+      } else {
+        downloadBlob(file, file.name);
+        toast(`Backup downloaded: ${summary}`);
+      }
+    } catch (err) {
+      console.error('Backup failed', err);
+      backupError.textContent = 'Couldn\'t make the backup. Free up some space on the phone and try again.';
+      backupError.hidden = false;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Back up everything';
+    }
+  });
+  const backupInput = $('[data-input="backup"]');
+  $('[data-act="restore"]').addEventListener('click', () => backupInput.click());
+  backupInput.addEventListener('change', async () => {
+    const file = backupInput.files && backupInput.files[0];
+    backupInput.value = '';
+    if (!file) return;
+    backupError.hidden = true;
+    let backup;
+    try {
+      backup = await readBackup(file);
+    } catch {
+      backupError.textContent = 'That isn\'t a PitSide backup file (pitside-backup-….zip).';
+      backupError.hidden = false;
+      return;
+    }
+    const when = backup.createdAt ? new Date(backup.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'an unknown date';
+    const ok = await confirmDialog({
+      title: 'Restore this backup?',
+      message: `Backup from ${when}: ${backup.entries.length} entries, ${backup.formats.length} formats, ${backup.meetings.length} meetings. `
+        + 'Missing items are added and older entries are updated. Nothing on this phone is deleted.',
+      confirmText: 'Restore',
+    });
+    if (!ok) return;
+    let withSettings = false;
+    if (backup.settings) {
+      withSettings = !settings.author || await confirmDialog({
+        title: 'Also restore settings?',
+        message: 'Your name, theme and export options from the backup.',
+        confirmText: 'Yes, restore them',
+        cancelText: 'Keep my settings',
+      });
+    }
+    try {
+      const r = await restoreBackup(backup, { withSettings });
+      toast(`Restored: ${r.added} new, ${r.updated} updated entries, ${r.formats} formats, ${r.meetings} meetings`);
+      setTimeout(() => location.reload(), 1200);   // start fresh with everything restored
+    } catch (err) {
+      console.error('Restore failed', err);
+      backupError.textContent = 'Couldn\'t restore everything. Free up some space on the phone and try again.';
+      backupError.hidden = false;
+    }
+  });
 
   // Delete all: confirm twice.
   $('[data-act="delete-all"]').addEventListener('click', async () => {

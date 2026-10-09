@@ -21,7 +21,7 @@ import {
   getAllEntries, getEntry, putEntry, readKey, writeKey,
   getAllTeamEntries, putTeamEntry, deleteTeamEntry,
 } from './db.js';
-import { isCloudConfigured, getAccount, table, files, friendlyError } from './cloud.js';
+import { isCloudConfigured, getAccount, table, rpc, files, friendlyError } from './cloud.js';
 import { getTeams, refreshTeams } from './team.js';
 import { audioExtension } from './exporter.js';
 import { photosOf } from './image.js';
@@ -156,7 +156,7 @@ async function uploadEntry(e, team, userId) {
     photos,
   };
 
-  await table.upsert('entries', {
+  const row = {
     id: e.id,
     team_id: team.teamId,
     user_id: userId,
@@ -164,6 +164,9 @@ async function uploadEntry(e, team, userId) {
     stage: e.stage || null,
     caption: e.caption || '',
     match_number: e.matchNumber || null,
+    subsystem: e.subsystem || null,
+    test_data: e.testData || null,
+    match_data: e.match || null,
     author: e.author,
     photos,                                              // [{ photo, drawing, note }] (paths + note)
     photo_path: photos[0] ? photos[0].photo : null,      // first photo (older versions read this)
@@ -173,7 +176,16 @@ async function uploadEntry(e, team, userId) {
     audio_mime: e.audio ? plainMime(e.audioMime) : null,
     created_at: e.createdAt,
     updated_at: e.updatedAt,
-  });
+  };
+  try {
+    await table.upsert('entries', row);
+  } catch (err) {
+    // The team database hasn't had the v1.8 update yet (no subsystem/test/match columns):
+    // upload without them rather than not at all.
+    if (!/subsystem|test_data|match_data/.test(err.message || '')) throw err;
+    const NEW = ['subsystem', 'test_data', 'match_data'];
+    await table.upsert('entries', Object.fromEntries(Object.entries(row).filter(([k]) => !NEW.includes(k))));
+  }
 
   // Remove the files of the previous version.
   const used = new Set(remotePaths(paths));
@@ -227,6 +239,11 @@ async function pushDeletes(myTeams) {
 
 // ---- Download each team's entries ----
 
+// { name, at, userId } of the teammate who witnessed it, or null.
+function witnessFromRow(r) {
+  return r.witnessed_by ? { name: r.witnessed_by, at: r.witnessed_at, userId: r.witnessed_by_id } : null;
+}
+
 // A team entry as stored on the phone. paths = where its files are online;
 // photos/thumb/audio = the downloaded files (thumb at once, the rest when opened/exported).
 function fromRow(r) {
@@ -241,6 +258,10 @@ function fromRow(r) {
     stage: r.stage,
     caption: r.caption || '',
     matchNumber: r.match_number,
+    subsystem: r.subsystem || '',
+    testData: r.test_data || null,
+    match: r.match_data || null,
+    witness: witnessFromRow(r),
     author: r.author,
     audioMime: r.audio_mime,
     createdAt: r.created_at,
@@ -270,6 +291,11 @@ async function pullTeamEntries(teams, userId) {
       }
       if (row.user_id === userId && mine.has(row.id)) {
         // My own entry: its files are already on this phone, don't store them twice.
+        // A teammate may have witnessed it: copy that onto my entry.
+        const local = await getEntry(row.id);
+        if (local && local.sync === 'synced' && JSON.stringify(local.witness || null) !== JSON.stringify(rec.witness)) {
+          await putEntry({ ...local, witness: rec.witness });
+        }
         rec.localCopy = true;
         rec.photos = rec.photos.map((p) => ({ photo: null, drawing: null, note: p.note }));
         rec.thumb = null;
@@ -321,4 +347,28 @@ export function upgradeTeamRecord(rec) {
 export function teamEntryPaths(rec) {
   upgradeTeamRecord(rec);
   return [rec.paths.thumb, rec.paths.audio, ...rec.paths.photos.flatMap((p) => [p.photo, p.drawing])].filter(Boolean);
+}
+
+// ---- Witness and comments (need internet) ----
+
+// Sign a teammate's entry as its witness (sign = false takes your signature back).
+// Returns the team entry with its new witness.
+export async function witnessEntry(rec, sign) {
+  const row = await rpc('witness_entry', { entry: rec.id, sign });
+  const updated = { ...rec, witness: witnessFromRow(row || {}) };
+  await putTeamEntry(updated);
+  return updated;
+}
+
+// [{ id, user_id, author, body, created_at }], oldest first.
+export function listComments(entryId) {
+  return table.select('entry_comments', `entry_id=eq.${encodeURIComponent(entryId)}&order=created_at.asc&select=id,user_id,author,body,created_at`);
+}
+
+export function addComment(entryId, text) {
+  return rpc('add_comment', { entry: entryId, comment: text });
+}
+
+export function deleteComment(id) {
+  return table.remove('entry_comments', `id=eq.${encodeURIComponent(id)}`);
 }
