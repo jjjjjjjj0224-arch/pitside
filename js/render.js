@@ -143,19 +143,21 @@ export function photoBoxesOf(template) {
     .sort((a, b) => (Math.abs(a.y - b.y) < 0.03 ? a.x - b.x : a.y - b.y));
 }
 
-function photosPerPage(options, template) {
+// options.photosPerPage: 1, 2, 4 or 'all' (every photo of the entry on one image).
+function photosPerPage(entry, options, template) {
   if (template) return photoBoxesOf(template).length || Infinity;   // no Photo box: one page
+  if (options.photosPerPage === 'all') return Math.max(1, photosOf(entry).length);
   return Math.max(1, Number(options.photosPerPage) || 1);
 }
 
 // How many images an entry makes in this layout.
 export function pageCountFor(entry, options, template) {
-  return Math.max(1, Math.ceil(photosOf(entry).length / photosPerPage(options, template)));
+  return Math.max(1, Math.ceil(photosOf(entry).length / photosPerPage(entry, options, template)));
 }
 
 // The photos on one page, each with its number in the whole entry (1, 2, 3...).
 function photosOnPage(entry, options, template, pageIndex) {
-  const per = photosPerPage(options, template);
+  const per = photosPerPage(entry, options, template);
   if (per === Infinity) return [];
   return photosOf(entry)
     .map((p, i) => ({ ...p, number: i + 1 }))
@@ -207,7 +209,7 @@ export function pageText(entry, options, pageIndex, pageCount, pagePhotos, showC
 
 // "Photo 2 of 5", "Photos 3–4 of 5", or '' for a single photo.
 function photoLabel(pagePhotos, total) {
-  if (total < 2 || !pagePhotos.length) return '';
+  if (total < 2 || !pagePhotos.length || pagePhotos.length === total) return '';   // all on this page: no label
   const first = pagePhotos[0].number;
   const last = pagePhotos[pagePhotos.length - 1].number;
   return first === last ? `Photo ${first} of ${total}` : `Photos ${first}–${last} of ${total}`;

@@ -697,3 +697,4 @@ h1:focus { outline: none; }
 }
 .seg-radio input:checked + span { border-color: var(--primary); background: var(--primary); color: var(--on-primary); }
 .seg-radio input:focus-visible + span { outline: 3px solid var(--focus); outline-offset: 2px; }
+.segmented.four { grid-template-columns: repeat(4, 1fr); }

@@ -220,7 +220,7 @@ export async function renderSettings(el) {
     box.querySelectorAll('input[data-accent]').forEach((r) => { r.checked = r.value === opts.accent; });
     const current = formats.some((f) => f.id === opts.format) ? opts.format : 'standard';
     box.querySelectorAll('input[data-format]').forEach((r) => { r.checked = r.value === current; });
-    box.querySelectorAll('input[data-per-page]').forEach((r) => { r.checked = Number(r.value) === Number(opts.photosPerPage || 1); });
+    box.querySelectorAll('input[data-per-page]').forEach((r) => { r.checked = r.value === String(opts.photosPerPage || 1); });
     box.querySelectorAll('input[data-caption-pages]').forEach((r) => { r.checked = r.value === (opts.captionPages || 'first'); });
     box.querySelector('input[data-bullets]').checked = Boolean(opts.bullets);
     const showLayout = () => {
@@ -236,7 +236,7 @@ export async function renderSettings(el) {
         size: box.querySelector('input[data-size]:checked').value,
         fields: {},
         accent: box.querySelector('input[data-accent]:checked').value,
-        photosPerPage: Number((box.querySelector('input[data-per-page]:checked') || {}).value || 1),
+        photosPerPage: perPageValue((box.querySelector('input[data-per-page]:checked') || {}).value),
         captionPages: (box.querySelector('input[data-caption-pages]:checked') || {}).value || 'first',
         bullets: box.querySelector('input[data-bullets]').checked,
       };
@@ -324,8 +324,8 @@ export async function renderSettings(el) {
           <legend class="label-small">Entries with several photos</legend>
           <div class="standard-only">
             <p class="hint">Photos on each image:</p>
-            <div class="segmented" role="group" aria-label="Photos on each image">
-              ${[1, 2, 4].map((k) => `<label class="seg-radio"><input type="radio" name="${n}-per" data-per-page value="${k}"> <span>${k}</span></label>`).join('')}
+            <div class="segmented four" role="group" aria-label="Photos on each image">
+              ${[['1', '1'], ['2', '2'], ['4', '4'], ['all', 'All']].map(([v, label]) => `<label class="seg-radio"><input type="radio" name="${n}-per" data-per-page value="${v}"> <span>${label}</span></label>`).join('')}
             </div>
           </div>
           <p class="hint format-only">Your notebook format fits as many photos on a page as it has Photo boxes.</p>
@@ -361,4 +361,9 @@ export async function renderSettings(el) {
         <img class="export-preview" alt="Preview of an exported ${TYPE_LABELS[type]} image" hidden>
       </details>`;
   }
+}
+
+// "1" / "2" / "4" -> number, "all" stays 'all'.
+function perPageValue(value) {
+  return value === 'all' ? 'all' : Number(value) || 1;
 }

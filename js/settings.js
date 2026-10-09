@@ -10,7 +10,7 @@ import { TYPES } from './ui.js';
 //   size:   'slide' (1920x1080, 16:9) or 'square' (1080x1080)    (PitSide layout only)
 //   fields: which text to print on the exported image
 //   accent: color of the type label
-//   photosPerPage: photos on each image, 1, 2 or 4         (PitSide layout; a notebook
+//   photosPerPage: photos on each image, 1, 2, 4 or 'all'  (PitSide layout; a notebook
 //                  format has as many as its Photo boxes)
 //   captionPages:  when an entry makes several images: caption on the 'first' one,
 //                  'spread' over them, or on 'every' one

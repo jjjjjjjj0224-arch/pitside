@@ -17,6 +17,7 @@ import { TYPES, TYPE_LABELS, esc, formatBytes, formatShortDate, toast, UrlBag } 
 const choice = {
   source: 'mine',    // 'mine', or a team id (that whole team's shared entries)
   includePhotos: true,   // add a photos/ folder with the full-size photos
+  slides: true,      // add slides.pptx: one editable slide per entry (move photos and text yourself)
   format: 'auto',    // 'auto' (each type's own format), 'standard' (PitSide layout) or a format id
   types: new Set(TYPES),
   range: 'week',     // 'week' | 'last7' | 'custom' | 'all'
@@ -123,6 +124,12 @@ export async function renderExport(el) {
       <label class="option">
         <input type="checkbox" data-include-photos>
         <span>Also include the full-size photos (a "photos" folder, for writing the notebook)</span>
+      </label>
+
+      <label class="option">
+        <input type="checkbox" data-slides>
+        <span>Also make editable slides (slides.pptx): one slide per entry with all its photos and captions,
+          each one separate so you can move them around. Google Slides: File &gt; Import slides.</span>
       </label>
 
       <p class="match-count" aria-live="polite"></p>
@@ -234,6 +241,7 @@ export async function renderExport(el) {
     el.querySelectorAll('input[name="range"]').forEach((r) => { r.checked = r.value === choice.range; });
     el.querySelectorAll('input[name="source"]').forEach((r) => { r.checked = r.value === choice.source; });
     $('[data-include-photos]').checked = choice.includePhotos;
+    $('[data-slides]').checked = choice.slides;
     $('.custom-dates').hidden = choice.range !== 'custom';
     $('[data-date="from"]').value = choice.from;
     $('[data-date="to"]').value = choice.to;
@@ -268,6 +276,10 @@ export async function renderExport(el) {
     choice.source = r.value;
     update();
   }));
+  $('[data-slides]').addEventListener('change', (e) => {
+    choice.slides = e.target.checked;
+    update();
+  });
   $('[data-include-photos]').addEventListener('change', (e) => {
     choice.includePhotos = e.target.checked;
     update();
@@ -311,7 +323,7 @@ export async function renderExport(el) {
     try {
       const zip = await buildExportZip(list, settings, (done, total) => {
         exportBtn.textContent = `Making images… ${done} of ${total}`;
-      }, { includePhotos: choice.includePhotos, format: choice.format });
+      }, { includePhotos: choice.includePhotos, format: choice.format, slides: choice.slides });
       const name = `pitside_export_${toInputDate(new Date())}.zip`;
       zipFile = new File([zip], name, { type: 'application/zip' });
       const voiceCount = list.filter((e) => e.audio).length;
@@ -320,7 +332,8 @@ export async function renderExport(el) {
       const photoCount = choice.includePhotos ? list.reduce((n, e) => n + photosOf(e).length, 0) : 0;
       $('.result-text').textContent = `${name} · ${imageCount} slide ${imageCount === 1 ? 'image' : 'images'}`
         + `${photoCount ? ` · ${photoCount} ${photoCount === 1 ? 'photo' : 'photos'}` : ''}`
-        + `${voiceCount ? ` · ${voiceCount} voice ${voiceCount === 1 ? 'note' : 'notes'}` : ''} · ${formatBytes(zip.size)}`;
+        + `${voiceCount ? ` · ${voiceCount} voice ${voiceCount === 1 ? 'note' : 'notes'}` : ''}`
+        + `${choice.slides ? ' · slides.pptx' : ''} · ${formatBytes(zip.size)}`;
       result.hidden = false;
       const shareable = canShareFile(zipFile);
       $('[data-act="share-zip"]').hidden = !shareable;

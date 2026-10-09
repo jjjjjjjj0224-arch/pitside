@@ -4,6 +4,7 @@
 import { renderEntryImage, pageCountFor } from './render.js';
 import { getFormat } from './templates.js';
 import { makeZip } from './zip.js';
+import { buildPptx } from './pptx.js';
 import { photosOf, flattenPhoto, loadImage, canvasToBlob } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
 
@@ -119,9 +120,10 @@ function buildCsv(entries, names, includePhotos, imageNames) {
 }
 
 // Build the export ZIP: the PNG pages of each entry, each voice note, entries.csv,
-// and (includePhotos) a photos/ folder with the full-size photos for the notebook.
+// (includePhotos) a photos/ folder with the full-size photos for the notebook, and
+// (slides) slides.pptx: one editable slide per entry (see pptx.js).
 // onProgress(done, total) is called as each entry's images are made.
-export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true, format = 'auto' } = {}) {
+export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true, format = 'auto', slides = false } = {}) {
   const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
@@ -145,6 +147,7 @@ export async function buildExportZip(entries, settings, onProgress = () => {}, {
     onProgress(i + 1, sorted.length);
   }
   files.push({ name: 'entries.csv', data: buildCsv(sorted, names, includePhotos, imageNames), date: new Date() });
+  if (slides) files.push({ name: 'slides.pptx', data: await buildPptx(sorted, settings), date: new Date() });
   return makeZip(files);
 }
 
