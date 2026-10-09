@@ -198,6 +198,41 @@ uploaded. Only the chosen page is kept, as a picture in IndexedDB (keys `formats
 
 ---
 
+## Notebook helpers (v1.8)
+
+- **Subsystem** (Drivetrain, Intake…) on each entry. Notebook titles become "Build - Intake".
+- **Tracker** (Home → Tracker): each subsystem against the design stages. Gaps (a step
+  skipped before the last one done) are marked **!**, the next step **→**. Tap a box to see
+  those entries. Save it as a slide.
+- **Test results** on any entry: trials as numbers (with an optional goal; lower or higher is
+  better) or pass/fail. Export adds a page with a chart and a table, or fills a
+  "Test results" box in your notebook format. The average and success rate are worked out.
+- **Dictate** next to the caption: speak instead of typing (the phone's speech service listens).
+- **Match details** on competition entries (event, partners, scores, auton) and the
+  **Season** screen: record, win rate, average scores, auton success, per event, plus a
+  summary slide.
+- **Witness**: a teammate opens your shared entry and taps *Witness this entry*. Their name and
+  the date can go in the "Witnessed by / on" boxes. Editing the entry afterwards clears it
+  (they signed the old version). Nobody can witness their own entry.
+- **Comments** under shared entries. You can delete your own; the team owner can delete any.
+- **Meetings** (Home → Meetings): who came, goals, what got done, next time. One summary slide
+  per week (with that week's entries), also in Export.
+- **Search and filters** on Home: words in captions, photo notes, subsystems, events; filter by
+  subsystem, stage, person and dates.
+- **Backup** (Settings → Storage): one `.zip` with every entry, photo, voice note, notebook
+  format and meeting. **Restore** adds what's missing and updates older entries; it never
+  deletes. Home reminds you after 2 weeks without a backup.
+- **Send to Google Slides** (Export, after making editable slides): uploads `slides.pptx` to
+  your Google Drive as a Google Slides file. Only asks for access to files PitSide creates
+  (`drive.file`). Needs `GOOGLE_CLIENT_ID` in `js/config.js` and, in Google Cloud: the Google
+  Drive API enabled, the app's address as an Authorized JavaScript origin, and the
+  `drive.file` scope on the consent screen.
+
+The witness, comments and new entry fields need `supabase/schema.sql` run again on the team
+database (done for this project). Until then, entries still upload without the new fields.
+
+---
+
 ## How it works (for the process journal)
 
 ```
