@@ -11,6 +11,7 @@ import { isCloudConfigured, getAccount } from '../cloud.js';
 import { getTeams, renameMe } from '../team.js';
 import { TYPES, TYPE_LABELS, ACCENTS, esc, formatBytes, confirmDialog, toast, UrlBag } from '../ui.js';
 import { THEMES, applyTheme, customTheme, contrast } from '../themes.js';
+import { getTemplate } from '../templates.js';
 
 // A small picture of a theme: page background, a card with two text lines, an accent button.
 // With a second theme (Auto), the tile is split diagonally: light / dark.
@@ -46,6 +47,8 @@ export async function renderSettings(el) {
   let settings = getSettings();
   let entries = await getAllEntries();
   const account = isCloudConfigured() ? await getAccount() : null;
+  // Notebook templates per type (they live on this phone).
+  const templates = Object.fromEntries(await Promise.all(TYPES.map(async (t) => [t, await getTemplate(t)])));
   const urls = new UrlBag();
 
   el.innerHTML = `
@@ -129,7 +132,7 @@ export async function renderSettings(el) {
         <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
-      <p class="hint center">PitSide v1.4</p>
+      <p class="hint center">PitSide v1.5</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -200,15 +203,23 @@ export async function renderSettings(el) {
     box.querySelectorAll('input[data-size]').forEach((r) => { r.checked = r.value === opts.size; });
     box.querySelectorAll('input[data-field]').forEach((c) => { c.checked = Boolean(opts.fields[c.dataset.field]); });
     box.querySelectorAll('input[data-accent]').forEach((r) => { r.checked = r.value === opts.accent; });
+    box.querySelectorAll('input[data-layout]').forEach((r) => { r.checked = r.value === (templates[type] ? opts.layout : 'standard'); });
+    const showLayout = () => {
+      const useTemplate = (box.querySelector('input[data-layout]:checked') || {}).value === 'template';
+      box.querySelectorAll('.standard-only').forEach((f) => { f.hidden = useTemplate; });
+    };
+    showLayout();
 
     box.addEventListener('change', async () => {
       const next = {
+        layout: (box.querySelector('input[data-layout]:checked') || {}).value || 'standard',
         size: box.querySelector('input[data-size]:checked').value,
         fields: {},
         accent: box.querySelector('input[data-accent]:checked').value,
       };
       box.querySelectorAll('input[data-field]').forEach((c) => { next.fields[c.dataset.field] = c.checked; });
       settings = await saveExportOptions(type, next);
+      showLayout();
       box.querySelector('summary .type-badge').style.setProperty('--accent', next.accent);
       updatePreview(type);
     });
@@ -281,16 +292,25 @@ export async function renderSettings(el) {
       <details class="export-type" data-export-type="${type}">
         <summary><span class="type-badge" style="--accent:${esc(settings.export[type].accent)}">${TYPE_LABELS[type]}</span> export</summary>
         <fieldset class="field">
+          <legend class="label-small">Layout</legend>
+          <label class="option"><input type="radio" name="${n}-layout" data-layout value="standard"> <span>PitSide layout</span></label>
+          <label class="option"><input type="radio" name="${n}-layout" data-layout value="template" ${templates[type] ? '' : 'disabled'}>
+            <span>My notebook's layout${templates[type] ? '' : ' (set up below first)'}</span></label>
+          <a class="btn btn-secondary btn-block" href="#/template/${type}">${templates[type] ? 'Edit notebook template' : 'Set up from my notebook PDF'}</a>
+          <p class="hint">Uses a page from your own notebook as the background, with your entry placed in boxes you mark.
+            Your notebook PDF stays on this phone.</p>
+        </fieldset>
+        <fieldset class="field standard-only">
           <legend class="label-small">Image size</legend>
           <label class="option"><input type="radio" name="${n}-size" data-size value="slide"> <span>Slide 16:9 (1920 × 1080)</span></label>
           <label class="option"><input type="radio" name="${n}-size" data-size value="square"> <span>Square (1080 × 1080)</span></label>
         </fieldset>
-        <fieldset class="field">
+        <fieldset class="field standard-only">
           <legend class="label-small">Print on the image</legend>
           ${FIELD_LABELS.map(([key, label]) => `
             <label class="option"><input type="checkbox" data-field="${key}"> <span>${label}</span></label>`).join('')}
         </fieldset>
-        <fieldset class="field">
+        <fieldset class="field standard-only">
           <legend class="label-small">Label color</legend>
           <div class="accent-list">
             ${ACCENTS.map((a) => `

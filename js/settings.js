@@ -11,6 +11,7 @@ import { TYPES } from './ui.js';
 function exportDefaults(accent, showMatch) {
   return {
     size: 'slide',
+    layout: 'standard',   // 'standard' (PitSide layout) or 'template' (your notebook page, see templates.js)
     fields: { caption: true, datetime: true, author: true, stage: true, match: showMatch },
     accent,
   };

@@ -17,6 +17,7 @@ import { renderDetail } from './screens/detail.js';
 import { renderExport } from './screens/export.js';
 import { renderSettings } from './screens/settings.js';
 import { renderTeams, renderTeamDetail } from './screens/team.js';
+import { renderTemplateEditor } from './screens/template.js';
 import { renderTeamEntry } from './screens/teamEntry.js';
 
 // Screen addresses. (.+) parts are passed to the screen, e.g. the entry id.
@@ -32,6 +33,7 @@ addRoute(/^#\/team$/, (el) => renderTeams(el, null));
 addRoute(/^#\/team\/(.+)$/, renderTeamDetail);
 addRoute(/^#\/join\/([A-Za-z0-9]+)$/, renderTeams);      // invite link
 addRoute(/^#\/team-entry\/(.+)$/, renderTeamEntry);
+addRoute(/^#\/template\/(.+)$/, renderTemplateEditor);   // notebook template editor
 
 // First launch: no name yet -> show the "What's your name?" screen.
 // (An invite link remembers its code, so joining continues after the name.)

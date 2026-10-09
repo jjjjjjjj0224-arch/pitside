@@ -11,6 +11,7 @@
 
 import { loadImage, canvasToBlob, fitContain, photosOf } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
+import { getTemplate, TEXT_SIZES, FONTS } from './templates.js';
 
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 const MARGIN = 64;
@@ -21,6 +22,11 @@ const TEXT_LIGHT = '#4B5563';
 // options: settings.export[entry.type] = { size, fields, accent }
 // audioFileName: name of the voice note file in the export (if any)
 export async function renderEntryImage(entry, options, audioFileName, photoIndex = 0) {
+  // "Your notebook" layout: draw onto the sample page from the notebook template.
+  if (options.layout === 'template') {
+    const template = await getTemplate(entry.type);
+    if (template) return renderTemplateImage(entry, template, audioFileName, photoIndex);
+  }
   const W = options.size === 'square' ? 1080 : 1920;
   const H = 1080;
   const canvas = document.createElement('canvas');
@@ -195,4 +201,106 @@ function drawText(ctx, layout, box, accent) {
       ctx.fillRect(box.x, barY, Math.round(90 * layout.scale), Math.max(4, Math.round(8 * layout.scale)));
     }
   }
+}
+
+// ---- Notebook template layout ----
+// The sample page is drawn first. Then each box: optionally painted over with the
+// page's background color (to hide the old content), then filled with this entry.
+
+// The text a box shows for this entry ('' = nothing to show).
+export function templateBoxText(kind, entry, audioFileName, photoIndex, photoCount) {
+  const d = new Date(entry.createdAt);
+  switch (kind) {
+    case 'label': return (TYPE_LABELS[entry.type] || entry.type).toUpperCase();
+    case 'datetime': return longDateTime(entry.createdAt);
+    case 'date': return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    case 'author': return entry.author || '';
+    case 'stage': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : '';
+    case 'match': return entry.matchNumber || '';
+    case 'caption': return (entry.caption || '').trim();
+    case 'voice': return entry.audio && audioFileName ? `Voice note: see audio file ${audioFileName}` : '';
+    case 'photoNumber': return photoCount > 1 ? `Photo ${photoIndex + 1} of ${photoCount}` : '';
+    default: return '';
+  }
+}
+
+export async function renderTemplateImage(entry, template, audioFileName, photoIndex = 0) {
+  const page = await loadImage(template.page);
+  const W = page.naturalWidth;
+  const H = page.naturalHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(page, 0, 0, W, H);
+
+  const photos = photosOf(entry);
+  const chosen = photos[photoIndex] || null;
+  const photo = chosen ? await loadImage(chosen.photo) : null;
+  const drawing = chosen && chosen.drawing ? await loadImage(chosen.drawing) : null;
+  const scale = W / 1920;
+
+  for (const b of template.boxes) {
+    const box = { x: b.x * W, y: b.y * H, w: b.w * W, h: b.h * H };
+    if (b.cover) {
+      ctx.fillStyle = b.coverColor || '#FFFFFF';
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+    }
+    if (b.kind === 'photo') {
+      if (photo) drawTemplatePhoto(ctx, photo, drawing, box, b.fit);
+      continue;
+    }
+    const text = templateBoxText(b.kind, entry, audioFileName, photoIndex, photos.length);
+    if (text) drawTemplateText(ctx, text, box, b, scale);
+  }
+  return canvasToBlob(canvas, 'image/png');
+}
+
+// fit 'contain': whole photo inside the box. 'cover': fill the box, cropping the edges.
+function drawTemplatePhoto(ctx, photo, drawing, box, fit) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(box.x, box.y, box.w, box.h);
+  ctx.clip();
+  let r;
+  if (fit === 'cover') {
+    const s = Math.max(box.w / photo.naturalWidth, box.h / photo.naturalHeight);
+    const w = photo.naturalWidth * s;
+    const h = photo.naturalHeight * s;
+    r = { x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h };
+  } else {
+    r = fitContain(photo.naturalWidth, photo.naturalHeight, box);
+  }
+  ctx.drawImage(photo, r.x, r.y, r.w, r.h);
+  if (drawing) ctx.drawImage(drawing, r.x, r.y, r.w, r.h);
+  ctx.restore();
+}
+
+// Text in a box: wrapped, shrunk (down to half size) if it doesn't fit, then cut with "…".
+function drawTemplateText(ctx, text, box, b, scale) {
+  const font = FONTS[b.font] || FONTS.sans;
+  const weight = b.bold ? 700 : 400;
+  let size = (TEXT_SIZES[b.size] || TEXT_SIZES.M) * scale;
+  const minSize = size * 0.5;
+  let lines;
+  for (;;) {
+    ctx.font = `${weight} ${Math.round(size)}px ${font}`;
+    lines = wrapText(ctx, text, box.w);
+    if (lines.length * size * 1.3 <= box.h || size <= minSize) break;
+    size *= 0.9;
+  }
+  const lineH = size * 1.3;
+  const maxLines = Math.max(1, Math.floor(box.h / lineH));
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    lines[maxLines - 1] = `${lines[maxLines - 1].replace(/\s*\S*$/, '')}…`;
+  }
+  ctx.fillStyle = b.color || '#111111';
+  ctx.textBaseline = 'top';
+  ctx.textAlign = b.align === 'center' ? 'center' : b.align === 'right' ? 'right' : 'left';
+  const x = b.align === 'center' ? box.x + box.w / 2 : b.align === 'right' ? box.x + box.w : box.x;
+  // Single short lines sit in the middle of the box's height; longer text starts at the top.
+  const top = lines.length === 1 ? box.y + (box.h - size) / 2 : box.y;
+  lines.forEach((line, i) => ctx.fillText(line, x, top + i * lineH));
+  ctx.textAlign = 'left';
 }

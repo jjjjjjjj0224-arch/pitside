@@ -19,6 +19,8 @@ $types = @{
   '.md' = 'text/plain; charset=utf-8'
   '.sql' = 'text/plain; charset=utf-8'
   '.wasm' = 'application/wasm'
+  '.mjs' = 'text/javascript; charset=utf-8'
+  '.pdf' = 'application/pdf'
   '.webp' = 'image/webp'
 }
 
