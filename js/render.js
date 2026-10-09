@@ -6,8 +6,10 @@
 // Which text is printed, the size and the label color come from that entry
 // type's export options in Settings.
 //
-// An entry with several photos makes one image per photo (photoIndex picks which),
-// each marked "Photo 2 of 3".
+// An entry with more photos than fit on one image makes several images ("pages",
+// pageIndex picks which), marked "Photo 2 of 3" or "Photos 3–4 of 5". The caption
+// goes on the first page (or is shared out / repeated, per Settings); each photo's
+// own note goes on the page with that photo.
 
 import { loadImage, canvasToBlob, fitContain, photosOf } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
@@ -19,13 +21,14 @@ const TEXT_DARK = '#111827';
 const TEXT_MID = '#374151';
 const TEXT_LIGHT = '#4B5563';
 
-// options: settings.export[entry.type] = { format, size, fields, accent }
+// options: settings.export[entry.type] = { format, size, fields, accent, photosPerPage, captionPages, bullets }
+// pageIndex: which image of the entry (see pageCountFor).
 // formatId: 'standard' (PitSide layout) or a notebook format id; default: that type's own format.
 // audioFileName: name of the voice note file in the export (if any)
-export async function renderEntryImage(entry, options, audioFileName, photoIndex = 0, formatId = options.format) {
+export async function renderEntryImage(entry, options, audioFileName, pageIndex = 0, formatId = options.format) {
   // A notebook format: draw onto the sample page from your notebook.
   const template = await getFormat(formatId);
-  if (template) return renderTemplateImage(entry, template, audioFileName, photoIndex);
+  if (template) return renderTemplateImage(entry, template, audioFileName, pageIndex, options);
   const W = options.size === 'square' ? 1080 : 1920;
   const H = 1080;
   const canvas = document.createElement('canvas');
@@ -37,29 +40,41 @@ export async function renderEntryImage(entry, options, audioFileName, photoIndex
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, W, H);
 
-  const photos = photosOf(entry);
-  const chosen = photos[photoIndex] || null;
-  const photo = chosen ? await loadImage(chosen.photo) : null;
-  const drawing = chosen && chosen.drawing ? await loadImage(chosen.drawing) : null;
-  const blocks = textBlocks(entry, options, audioFileName, photos.length > 1 ? `Photo ${photoIndex + 1} of ${photos.length}` : null);
+  const total = photosOf(entry).length;
+  const pageCount = pageCountFor(entry, options);
+  const onPage = photosOnPage(entry, options, null, pageIndex);
+  const loaded = await Promise.all(onPage.map(async (p) => ({
+    number: p.number,
+    photo: await loadImage(p.photo),
+    drawing: p.drawing ? await loadImage(p.drawing) : null,
+    note: p.note,
+  })));
+  const captionText = pageText(entry, options, pageIndex, pageCount, onPage, options.fields.caption);
+  const blocks = textBlocks(entry, options, audioFileName, photoLabel(onPage, total), captionText, pageIndex === 0);
+  // Several photos with notes: number them, to match "Photo 3: ..." in the text.
+  const tagged = loaded.length > 1 && loaded.some((p) => (p.note || '').trim());
+  const drawPhotos = (box) => gridCells(box, loaded.length, 24).forEach((cell, i) => {
+    const r = drawPhoto(ctx, loaded[i].photo, loaded[i].drawing, cell);
+    if (tagged) drawNumberTag(ctx, r, loaded[i].number, 1);
+  });
 
-  if (!photo) {
+  if (!loaded.length) {
     // Caption-only entry: text uses the whole image.
     const box = { x: MARGIN, y: MARGIN, w: W - MARGIN * 2, h: H - MARGIN * 2 };
     drawText(ctx, layoutText(ctx, blocks, box.w, box.h, 1.6), box, options.accent);
   } else if (options.size === 'square') {
-    // Text first (so we know how tall it is), photo gets the rest of the space.
+    // Text first (so we know how tall it is), photos get the rest of the space.
     const textW = W - MARGIN * 2;
     const layout = layoutText(ctx, blocks, textW, (H - MARGIN * 2) * 0.45, 1.1);
     const gap = 36;
     const photoBox = { x: MARGIN, y: MARGIN, w: textW, h: H - MARGIN * 2 - layout.height - gap };
-    drawPhoto(ctx, photo, drawing, photoBox);
+    drawPhotos(photoBox);
     drawText(ctx, layout, { x: MARGIN, y: photoBox.y + photoBox.h + gap, w: textW }, options.accent);
   } else {
     // 16:9: a square photo area on the left, text on the right.
     const side = H - MARGIN * 2;
     const photoBox = { x: MARGIN, y: MARGIN, w: side, h: side };
-    drawPhoto(ctx, photo, drawing, photoBox);
+    drawPhotos(photoBox);
     const textX = MARGIN + side + 56;
     const textBox = { x: textX, y: MARGIN, w: W - textX - MARGIN, h: side };
     drawText(ctx, layoutText(ctx, blocks, textBox.w, textBox.h, 1.4), textBox, options.accent);
@@ -69,6 +84,7 @@ export async function renderEntryImage(entry, options, audioFileName, photoIndex
 }
 
 // Photo fitted inside its box, drawing on top in exactly the same place.
+// Returns where it was drawn.
 function drawPhoto(ctx, photo, drawing, box) {
   const r = fitContain(photo.naturalWidth, photo.naturalHeight, box);
   ctx.drawImage(photo, r.x, r.y, r.w, r.h);
@@ -76,10 +92,129 @@ function drawPhoto(ctx, photo, drawing, box) {
   ctx.strokeStyle = '#D1D5DB';
   ctx.lineWidth = 2;
   ctx.strokeRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2);
+  return r;
+}
+
+// Split a box into a grid for `count` photos, picking the rows/columns that
+// leave the most room for a 4:3 photo in each cell.
+function gridCells(box, count, gap) {
+  let best = null;
+  for (let cols = 1; cols <= count; cols++) {
+    const rows = Math.ceil(count / cols);
+    const w = (box.w - gap * (cols - 1)) / cols;
+    const h = (box.h - gap * (rows - 1)) / rows;
+    const score = Math.min(w / 4, h / 3);
+    if (!best || score > best.score) best = { cols, w, h, score };
+  }
+  return Array.from({ length: count }, (_, i) => ({
+    x: box.x + (i % best.cols) * (best.w + gap),
+    y: box.y + Math.floor(i / best.cols) * (best.h + gap),
+    w: best.w,
+    h: best.h,
+  }));
+}
+
+// A small numbered circle on a photo's corner (so "Photo 3: ..." notes can point to it).
+function drawNumberTag(ctx, r, n, scale) {
+  const radius = Math.round(26 * scale);
+  const cx = r.x + radius + Math.round(10 * scale);
+  const cy = r.y + radius + Math.round(10 * scale);
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
+  ctx.fill();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = `700 ${Math.round(30 * scale)}px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(n), cx, cy + 1);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+}
+
+// ---- Pages: which photos and which text go on each exported image ----
+// An entry with more photos than fit on one page makes several pages. The caption
+// isn't repeated on all of them (unless you choose that): see pageText().
+
+// Photo boxes of a notebook format, in reading order (top to bottom, left to right).
+export function photoBoxesOf(template) {
+  return template.boxes
+    .filter((b) => b.kind === 'photo')
+    .sort((a, b) => (Math.abs(a.y - b.y) < 0.03 ? a.x - b.x : a.y - b.y));
+}
+
+function photosPerPage(options, template) {
+  if (template) return photoBoxesOf(template).length || Infinity;   // no Photo box: one page
+  return Math.max(1, Number(options.photosPerPage) || 1);
+}
+
+// How many images an entry makes in this layout.
+export function pageCountFor(entry, options, template) {
+  return Math.max(1, Math.ceil(photosOf(entry).length / photosPerPage(options, template)));
+}
+
+// The photos on one page, each with its number in the whole entry (1, 2, 3...).
+function photosOnPage(entry, options, template, pageIndex) {
+  const per = photosPerPage(options, template);
+  if (per === Infinity) return [];
+  return photosOf(entry)
+    .map((p, i) => ({ ...p, number: i + 1 }))
+    .slice(pageIndex * per, pageIndex * per + per);
+}
+
+// The caption as separate points: one per line, and one per sentence.
+export function captionPoints(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[•●○▪◦]\s*|[-*–]\s+)/, '').trim())
+    .filter(Boolean)
+    .flatMap((line) => line.replace(/([.!?])\s+(?=[A-Z0-9"'(“])/g, '$1\n').split('\n'))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+// The caption text for one page. options.captionPages:
+//   'first' (default): the caption on the first page, "(continued)" after that
+//   'spread': the caption's sentences shared out over the pages, in order
+//   'every':  the whole caption on every page
+// options.bullets: show it as bullet points. Each photo's own note is added as a
+// bullet on the page that shows that photo.
+export function pageText(entry, options, pageIndex, pageCount, pagePhotos, showCaption = true) {
+  const caption = showCaption ? (entry.caption || '').trim() : '';
+  const mode = options.captionPages || 'first';
+  const asBullets = Boolean(options.bullets);
+  let parts = [];
+  if (caption) {
+    const whole = asBullets ? captionPoints(caption) : [caption];
+    if (pageCount === 1 || mode === 'every') parts = whole;
+    else if (mode === 'spread') {
+      // Shared out from the front: 3 sentences over 5 pages = one each on pages 1-3.
+      const points = captionPoints(caption);
+      const per = Math.ceil(points.length / pageCount);
+      const share = points.slice(pageIndex * per, pageIndex * per + per);
+      parts = asBullets ? share : (share.length ? [share.join(' ')] : []);
+    } else if (pageIndex === 0) parts = whole;
+  }
+  const lines = asBullets ? parts.map((p) => `• ${p}`) : parts;
+  const several = pagePhotos.length > 1;
+  for (const p of pagePhotos) {
+    const note = (p.note || '').trim();
+    if (note) lines.push(`• ${several ? `Photo ${p.number}: ` : ''}${note}`);
+  }
+  if (!lines.length && caption && pageIndex > 0) lines.push('(continued)');
+  return lines.join('\n');
+}
+
+// "Photo 2 of 5", "Photos 3–4 of 5", or '' for a single photo.
+function photoLabel(pagePhotos, total) {
+  if (total < 2 || !pagePhotos.length) return '';
+  const first = pagePhotos[0].number;
+  const last = pagePhotos[pagePhotos.length - 1].number;
+  return first === last ? `Photo ${first} of ${total}` : `Photos ${first}–${last} of ${total}`;
 }
 
 // The pieces of text to print, in order, based on the type's settings.
-function textBlocks(entry, options, audioFileName, photoLabel) {
+function textBlocks(entry, options, audioFileName, photoLabel, captionText, firstPage) {
   const f = options.fields;
   const blocks = [{ kind: 'label', text: (TYPE_LABELS[entry.type] || entry.type).toUpperCase() }];
   const meta = [];
@@ -89,8 +224,8 @@ function textBlocks(entry, options, audioFileName, photoLabel) {
   if (f.stage && entry.stage) meta.push(`Stage: ${STAGE_LABELS[entry.stage] || entry.stage}`);
   if (f.match && entry.matchNumber) meta.push(`Match: ${entry.matchNumber}`);
   meta.forEach((text) => blocks.push({ kind: 'meta', text }));
-  if (f.caption && entry.caption && entry.caption.trim()) blocks.push({ kind: 'caption', text: entry.caption.trim() });
-  if (entry.audio && audioFileName) blocks.push({ kind: 'voice', text: `Voice note: see audio file ${audioFileName}` });
+  if (captionText) blocks.push({ kind: 'caption', text: captionText });
+  if (firstPage && entry.audio && audioFileName) blocks.push({ kind: 'voice', text: `Voice note: see audio file ${audioFileName}` });
   return blocks;
 }
 
@@ -164,17 +299,21 @@ function trimToHeight(layout, maxHeight) {
 }
 
 // Split text into lines that fit maxWidth. Keeps the user's own line breaks
-// and breaks very long words (like URLs) if needed.
+// and breaks very long words (like URLs) if needed. A "• " bullet's wrapped
+// lines are indented to line up after the bullet.
 function wrapText(ctx, text, maxWidth) {
   const out = [];
   for (const paragraph of text.split(/\r?\n/)) {
     if (!paragraph.trim()) { out.push(''); continue; }
+    const bullet = paragraph.startsWith('• ');
+    const space = ctx.measureText(' ').width || 1;
+    const indent = bullet ? ' '.repeat(Math.max(1, Math.round(ctx.measureText('• ').width / space))) : '';
     let line = '';
     for (const word of paragraph.split(/\s+/)) {
       const test = line ? `${line} ${word}` : word;
       if (ctx.measureText(test).width <= maxWidth) { line = test; continue; }
       if (line) out.push(line);
-      line = word;
+      line = `${indent}${word}`;
       while (ctx.measureText(line).width > maxWidth) {
         let cut = line.length - 1;
         while (cut > 1 && ctx.measureText(line.slice(0, cut)).width > maxWidth) cut--;
@@ -206,8 +345,9 @@ function drawText(ctx, layout, box, accent) {
 // The sample page is drawn first. Then each box: optionally painted over with the
 // page's background color (to hide the old content), then filled with this entry.
 
-// The text a box shows for this entry ('' = nothing to show).
-export function templateBoxText(kind, entry, audioFileName, photoIndex, photoCount) {
+// The text a box shows for this entry ('' = nothing to show). The caption and
+// photo number boxes depend on the page: see renderTemplateImage.
+function templateBoxText(kind, entry, audioFileName) {
   const d = new Date(entry.createdAt);
   switch (kind) {
     case 'label': return (TYPE_LABELS[entry.type] || entry.type).toUpperCase();
@@ -219,14 +359,15 @@ export function templateBoxText(kind, entry, audioFileName, photoIndex, photoCou
     case 'author': return entry.author || '';
     case 'stage': return entry.stage ? (STAGE_LABELS[entry.stage] || entry.stage) : '';
     case 'match': return entry.matchNumber || '';
-    case 'caption': return (entry.caption || '').trim();
     case 'voice': return entry.audio && audioFileName ? `Voice note: see audio file ${audioFileName}` : '';
-    case 'photoNumber': return photoCount > 1 ? `Photo ${photoIndex + 1} of ${photoCount}` : '';
     default: return '';
   }
 }
 
-export async function renderTemplateImage(entry, template, audioFileName, photoIndex = 0) {
+// options: that entry type's export options (caption on several pages, bullets).
+// A format with several Photo boxes fills them in reading order; more photos than
+// boxes continue on the next page (pageIndex).
+export async function renderTemplateImage(entry, template, audioFileName, pageIndex = 0, options = {}) {
   const page = await loadImage(template.page);
   const W = page.naturalWidth;
   const H = page.naturalHeight;
@@ -236,10 +377,11 @@ export async function renderTemplateImage(entry, template, audioFileName, photoI
   const ctx = canvas.getContext('2d');
   ctx.drawImage(page, 0, 0, W, H);
 
-  const photos = photosOf(entry);
-  const chosen = photos[photoIndex] || null;
-  const photo = chosen ? await loadImage(chosen.photo) : null;
-  const drawing = chosen && chosen.drawing ? await loadImage(chosen.drawing) : null;
+  const total = photosOf(entry).length;
+  const pageCount = pageCountFor(entry, options, template);
+  const onPage = photosOnPage(entry, options, template, pageIndex);
+  const slots = new Map(photoBoxesOf(template).map((b, i) => [b, onPage[i] || null]));
+  const tagged = onPage.length > 1 && onPage.some((p) => (p.note || '').trim());
   const scale = W / 1920;
 
   for (const b of template.boxes) {
@@ -249,16 +391,26 @@ export async function renderTemplateImage(entry, template, audioFileName, photoI
       ctx.fillRect(box.x, box.y, box.w, box.h);
     }
     if (b.kind === 'photo') {
-      if (photo) drawTemplatePhoto(ctx, photo, drawing, box, b.fit);
+      const p = slots.get(b);
+      if (!p) continue;
+      const photo = await loadImage(p.photo);
+      const drawing = p.drawing ? await loadImage(p.drawing) : null;
+      const r = drawTemplatePhoto(ctx, photo, drawing, box, b.fit);
+      if (tagged) drawNumberTag(ctx, r, p.number, scale);
       continue;
     }
-    const text = templateBoxText(b.kind, entry, audioFileName, photoIndex, photos.length);
+    let text;
+    if (b.kind === 'caption') text = pageText(entry, options, pageIndex, pageCount, onPage);
+    else if (b.kind === 'photoNumber') text = photoLabel(onPage, total);
+    else if (b.kind === 'voice' && pageIndex > 0) text = '';     // the voice note line only on the first page
+    else text = templateBoxText(b.kind, entry, audioFileName);
     if (text) drawTemplateText(ctx, text, box, b, scale);
   }
   return canvasToBlob(canvas, 'image/png');
 }
 
 // fit 'contain': whole photo inside the box. 'cover': fill the box, cropping the edges.
+// Returns the part of the box the photo shows in.
 function drawTemplatePhoto(ctx, photo, drawing, box, fit) {
   ctx.save();
   ctx.beginPath();
@@ -276,6 +428,12 @@ function drawTemplatePhoto(ctx, photo, drawing, box, fit) {
   ctx.drawImage(photo, r.x, r.y, r.w, r.h);
   if (drawing) ctx.drawImage(drawing, r.x, r.y, r.w, r.h);
   ctx.restore();
+  return {
+    x: Math.max(r.x, box.x),
+    y: Math.max(r.y, box.y),
+    w: Math.min(r.x + r.w, box.x + box.w) - Math.max(r.x, box.x),
+    h: Math.min(r.y + r.h, box.y + box.h) - Math.max(r.y, box.y),
+  };
 }
 
 // Text in a box: wrapped, shrunk (down to half size) if it doesn't fit, then cut with "…".
@@ -309,30 +467,37 @@ function drawTemplateText(ctx, text, box, b, scale) {
 }
 
 // A made-up entry, so previews work before there are any entries.
-let samplePhoto = null;
+let samplePhotos = null;
 export async function sampleEntry(type, author) {
-  if (!samplePhoto) {
-    const c = document.createElement('canvas');
-    c.width = 1200;
-    c.height = 900;
-    const ctx = c.getContext('2d');
-    const g = ctx.createLinearGradient(0, 0, 1200, 900);
-    g.addColorStop(0, '#9CA3AF');
-    g.addColorStop(1, '#4B5563');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, 1200, 900);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = `600 72px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText('Sample photo', 600, 470);
-    samplePhoto = await canvasToBlob(c, 'image/jpeg', 0.8);
+  if (!samplePhotos) {
+    samplePhotos = [];
+    for (const [n, from, to] of [[1, '#9CA3AF', '#4B5563'], [2, '#93C5FD', '#1E3A8A'], [3, '#FCA5A5', '#7F1D1D']]) {
+      const c = document.createElement('canvas');
+      c.width = 1200;
+      c.height = 900;
+      const ctx = c.getContext('2d');
+      const g = ctx.createLinearGradient(0, 0, 1200, 900);
+      g.addColorStop(0, from);
+      g.addColorStop(1, to);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, 1200, 900);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = `600 72px ${FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`Sample photo ${n}`, 600, 470);
+      samplePhotos.push(await canvasToBlob(c, 'image/jpeg', 0.8));
+    }
   }
   return {
     id: 'sample',
     type,
     stage: 'build',
-    photos: [{ photo: samplePhoto, drawing: null }],
-    caption: 'Sample caption: moved the intake 2 holes forward so it reaches the rings without hitting the wall.',
+    photos: [
+      { photo: samplePhotos[0], drawing: null, note: 'The intake before the change.' },
+      { photo: samplePhotos[1], drawing: null, note: 'Moved 2 holes forward.' },
+      { photo: samplePhotos[2], drawing: null, note: '' },
+    ],
+    caption: 'Sample caption: moved the intake 2 holes forward. Now it reaches the rings without hitting the wall.',
     audio: null,
     matchNumber: type === 'competition' ? 'Q12' : null,
     author: author || 'Your name',

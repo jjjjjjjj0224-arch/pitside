@@ -147,7 +147,7 @@ export async function renderSettings(el) {
         <p><a href="privacy.html" target="_blank" rel="noopener">Full privacy policy</a></p>
       </section>
 
-      <p class="hint center">PitSide v1.6</p>
+      <p class="hint center">PitSide v1.7</p>
     </main>`;
 
   const $ = (s) => el.querySelector(s);
@@ -220,9 +220,13 @@ export async function renderSettings(el) {
     box.querySelectorAll('input[data-accent]').forEach((r) => { r.checked = r.value === opts.accent; });
     const current = formats.some((f) => f.id === opts.format) ? opts.format : 'standard';
     box.querySelectorAll('input[data-format]').forEach((r) => { r.checked = r.value === current; });
+    box.querySelectorAll('input[data-per-page]').forEach((r) => { r.checked = Number(r.value) === Number(opts.photosPerPage || 1); });
+    box.querySelectorAll('input[data-caption-pages]').forEach((r) => { r.checked = r.value === (opts.captionPages || 'first'); });
+    box.querySelector('input[data-bullets]').checked = Boolean(opts.bullets);
     const showLayout = () => {
       const standard = (box.querySelector('input[data-format]:checked') || {}).value === 'standard';
       box.querySelectorAll('.standard-only').forEach((f) => { f.hidden = !standard; });
+      box.querySelectorAll('.format-only').forEach((f) => { f.hidden = standard; });
     };
     showLayout();
 
@@ -232,6 +236,9 @@ export async function renderSettings(el) {
         size: box.querySelector('input[data-size]:checked').value,
         fields: {},
         accent: box.querySelector('input[data-accent]:checked').value,
+        photosPerPage: Number((box.querySelector('input[data-per-page]:checked') || {}).value || 1),
+        captionPages: (box.querySelector('input[data-caption-pages]:checked') || {}).value || 'first',
+        bullets: box.querySelector('input[data-bullets]').checked,
       };
       box.querySelectorAll('input[data-field]').forEach((c) => { next.fields[c.dataset.field] = c.checked; });
       settings = await saveExportOptions(type, next);
@@ -312,6 +319,22 @@ export async function renderSettings(el) {
           <label class="option"><input type="radio" name="${n}-format" data-format value="standard"> <span>PitSide layout</span></label>
           ${formats.map((f) => `
             <label class="option"><input type="radio" name="${n}-format" data-format value="${esc(f.id)}"> <span>${esc(f.name)}</span></label>`).join('')}
+        </fieldset>
+        <fieldset class="field">
+          <legend class="label-small">Entries with several photos</legend>
+          <div class="standard-only">
+            <p class="hint">Photos on each image:</p>
+            <div class="segmented" role="group" aria-label="Photos on each image">
+              ${[1, 2, 4].map((k) => `<label class="seg-radio"><input type="radio" name="${n}-per" data-per-page value="${k}"> <span>${k}</span></label>`).join('')}
+            </div>
+          </div>
+          <p class="hint format-only">Your notebook format fits as many photos on a page as it has Photo boxes.</p>
+          <p class="hint">Caption:</p>
+          <label class="option"><input type="radio" name="${n}-cap" data-caption-pages value="first"> <span>On the first page only</span></label>
+          <label class="option"><input type="radio" name="${n}-cap" data-caption-pages value="spread"> <span>Split up over the pages</span></label>
+          <label class="option"><input type="radio" name="${n}-cap" data-caption-pages value="every"> <span>Repeat on every page</span></label>
+          <label class="option"><input type="checkbox" data-bullets> <span>Show the caption as bullet points (one per sentence)</span></label>
+          <p class="hint">Each photo's own note is printed as a bullet on the page with that photo.</p>
         </fieldset>
         <fieldset class="field standard-only">
           <legend class="label-small">Image size</legend>

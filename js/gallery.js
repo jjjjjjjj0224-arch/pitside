@@ -4,11 +4,12 @@
 
 import { flattenPhoto } from './image.js';
 import { photoFileName, shareOrDownload } from './exporter.js';
-import { toast } from './ui.js';
+import { toast, esc } from './ui.js';
 import { openViewer } from './viewer.js';
 
-// count: number of photos. Returns HTML with empty frames (filled in by mountGallery).
-export function galleryHtml(count) {
+// count: number of photos; notes: each photo's note (optional).
+// Returns HTML with empty frames (filled in by mountGallery).
+export function galleryHtml(count, notes = []) {
   if (!count) return '';
   const items = Array.from({ length: count }, (_, i) => `
     <figure class="gallery-item">
@@ -24,6 +25,7 @@ export function galleryHtml(count) {
           <button type="button" class="btn btn-secondary btn-small" data-download="${i}">Download</button>
         </span>
       </figcaption>
+      ${(notes[i] || '').trim() ? `<p class="gallery-note">${esc(notes[i].trim())}</p>` : ''}
     </figure>`).join('');
   return `
     <section class="gallery" aria-label="Photos">

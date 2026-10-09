@@ -44,7 +44,7 @@ export async function renderDetail(el, id) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page detail">
-      ${galleryHtml(photos.length)}
+      ${galleryHtml(photos.length, photos.map((p) => p.note))}
 
       <div class="detail-tags">
         ${typeBadge(entry.type, accent)}

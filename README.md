@@ -172,6 +172,17 @@ When you export, pick a format from the previews:
 
 Sharing a single entry uses that type's own format.
 
+### Entries with several photos
+
+- **Photos per page:** a notebook format fits as many photos as it has Photo boxes (they fill
+  top to bottom, left to right). The PitSide layout puts 1, 2 or 4 on each image (Settings →
+  Export options). More photos than fit continue on the next page.
+- **Caption:** printed on the first page only (later pages say "(continued)"), split up over
+  the pages, or repeated on every page. It can be shown as bullet points, one per sentence.
+- **Photo notes:** each photo can have its own note (under the photo on the New/Edit entry
+  screen). It's printed as a bullet on the page with that photo; with several photos on a
+  page, the photos get number tags and the notes say "Photo 3: …".
+
 To give teammates the same format: **Share this format with a teammate** makes a
 `.pitside-template.json` file; they open it with **Choose notebook PDF** and tap Save.
 

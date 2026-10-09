@@ -147,6 +147,7 @@ async function uploadEntry(e, team, userId) {
     photos.push({
       photo: await put(list[i].photo, `photo-${i + 1}`, 'picture'),
       drawing: await put(list[i].drawing, `drawing-${i + 1}`, 'picture'),
+      note: (list[i].note || '').slice(0, 300),
     });
   }
   const paths = {
@@ -164,7 +165,7 @@ async function uploadEntry(e, team, userId) {
     caption: e.caption || '',
     match_number: e.matchNumber || null,
     author: e.author,
-    photos,                                              // [{ photo, drawing }] paths
+    photos,                                              // [{ photo, drawing, note }] (paths + note)
     photo_path: photos[0] ? photos[0].photo : null,      // first photo (older versions read this)
     drawing_path: photos[0] ? photos[0].drawing : null,
     thumb_path: paths.thumb,
@@ -245,7 +246,7 @@ function fromRow(r) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     paths: { thumb: r.thumb_path, audio: r.audio_path, photos: photoPaths },
-    photos: photoPaths.map(() => ({ photo: null, drawing: null })),
+    photos: photoPaths.map((p) => ({ photo: null, drawing: null, note: p.note || '' })),
     thumb: null,
     audio: null,
   };
@@ -263,14 +264,14 @@ async function pullTeamEntries(teams, userId) {
       const rec = fromRow(row);
       const old = cached.get(row.id);
       if (old && old.updatedAt === rec.updatedAt && Array.isArray(old.photos)) {
-        rec.photos = old.photos;   // unchanged: keep downloaded files
+        rec.photos = old.photos.map((p, i) => ({ ...p, note: (rec.paths.photos[i] || {}).note || '' }));   // unchanged: keep downloaded files
         rec.thumb = old.thumb;
         rec.audio = old.audio;
       }
       if (row.user_id === userId && mine.has(row.id)) {
         // My own entry: its files are already on this phone, don't store them twice.
         rec.localCopy = true;
-        rec.photos = rec.photos.map(() => ({ photo: null, drawing: null }));
+        rec.photos = rec.photos.map((p) => ({ photo: null, drawing: null, note: p.note }));
         rec.thumb = null;
         rec.audio = null;
       } else if (!rec.thumb && rec.paths.thumb) {

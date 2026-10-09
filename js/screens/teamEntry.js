@@ -44,7 +44,7 @@ export async function renderTeamEntry(el, id) {
       <span class="topbar-spacer"></span>
     </header>
     <main class="page detail">
-      ${galleryHtml(photoCount)}
+      ${galleryHtml(photoCount, rec.paths.photos.map((p) => p.note))}
 
       <div class="detail-tags">
         ${typeBadge(rec.type, settings.export[rec.type].accent)}

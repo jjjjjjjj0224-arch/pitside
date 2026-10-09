@@ -1,7 +1,8 @@
 // Export helpers: file names, the CSV file, building the ZIP, and
 // sharing (Web Share API) or downloading a file.
 
-import { renderEntryImage } from './render.js';
+import { renderEntryImage, pageCountFor } from './render.js';
+import { getFormat } from './templates.js';
 import { makeZip } from './zip.js';
 import { photosOf, flattenPhoto, loadImage, canvasToBlob } from './image.js';
 import { TYPE_LABELS, STAGE_LABELS } from './ui.js';
@@ -28,13 +29,12 @@ export function audioFileName(entry, base = baseName(entry)) {
   return entry.audio ? `${base}.${audioExtension(entry.audioMime || entry.audio.type)}` : null;
 }
 
-// Image file names for an entry: one per photo.
-//   1 photo (or none):  2026-10-01_1542_build.png
-//   3 photos:           2026-10-01_1542_build_photo1.png, ..._photo2.png, ..._photo3.png
-export function imageFileNames(entry, base = baseName(entry)) {
-  const n = photosOf(entry).length;
-  if (n <= 1) return [`${base}.png`];
-  return Array.from({ length: n }, (_, i) => `${base}_photo${i + 1}.png`);
+// Image file names for an entry: one per page (see render.js).
+//   1 page:   2026-10-01_1542_build.png
+//   3 pages:  2026-10-01_1542_build_page1.png, ..._page2.png, ..._page3.png
+export function imageFileNames(base, pages) {
+  if (pages <= 1) return [`${base}.png`];
+  return Array.from({ length: pages }, (_, i) => `${base}_page${i + 1}.png`);
 }
 
 // Which format an entry is drawn in. format: 'auto' (that entry type's own format,
@@ -43,9 +43,14 @@ export function formatFor(entry, settings, format = 'auto') {
   return format === 'auto' ? settings.export[entry.type].format : format;
 }
 
-// Make all of an entry's export images (one per photo) as PNG files.
+// How many images (pages) an entry makes in that format.
+export async function pageCount(entry, settings, format = 'auto') {
+  return pageCountFor(entry, settings.export[entry.type], await getFormat(formatFor(entry, settings, format)));
+}
+
+// Make all of an entry's export images (one per page) as PNG files.
 export async function renderEntryImages(entry, settings, base = baseName(entry), format = 'auto') {
-  const names = imageFileNames(entry, base);
+  const names = imageFileNames(base, await pageCount(entry, settings, format));
   const audioName = audioFileName(entry, base);
   const images = [];
   for (let i = 0; i < names.length; i++) {
@@ -91,8 +96,9 @@ function csvDate(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function buildCsv(entries, names, includePhotos) {
-  const header = ['date', 'author', 'type', 'stage', 'match_number', 'caption', 'image_file', 'audio_file', 'photo_files'];
+// imageNames: entry id -> the image files made for it.
+function buildCsv(entries, names, includePhotos, imageNames) {
+  const header = ['date', 'author', 'type', 'stage', 'match_number', 'caption', 'photo_notes', 'image_file', 'audio_file', 'photo_files'];
   const rows = entries.map((e) => {
     const base = names.get(e.id);
     return [
@@ -102,7 +108,8 @@ function buildCsv(entries, names, includePhotos) {
       e.stage ? STAGE_LABELS[e.stage] : '',
       e.matchNumber || '',
       e.caption || '',
-      imageFileNames(e, base).join('; '),
+      photosOf(e).map((p, i) => ((p.note || '').trim() ? `Photo ${i + 1}: ${p.note.trim()}` : '')).filter(Boolean).join('; '),
+      (imageNames.get(e.id) || []).join('; '),
       audioFileName(e, base) || '',
       includePhotos ? photosOf(e).map((_, i, all) => `photos/${photoFileName(base, i, all.length)}`).join('; ') : '',
     ].map(csvCell).join(',');
@@ -111,18 +118,21 @@ function buildCsv(entries, names, includePhotos) {
   return `﻿${[header.join(','), ...rows].join('\r\n')}\r\n`;
 }
 
-// Build the export ZIP: one PNG per photo of each entry, each voice note, entries.csv,
+// Build the export ZIP: the PNG pages of each entry, each voice note, entries.csv,
 // and (includePhotos) a photos/ folder with the full-size photos for the notebook.
 // onProgress(done, total) is called as each entry's images are made.
 export async function buildExportZip(entries, settings, onProgress = () => {}, { includePhotos = true, format = 'auto' } = {}) {
   const sorted = [...entries].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));  // oldest first
   const names = uniqueBaseNames(sorted);
   const files = [];
+  const imageNames = new Map();
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
     const base = names.get(e.id);
     const audioName = audioFileName(e, base);
-    for (const image of await renderEntryImages(e, settings, base, format)) {
+    const images = await renderEntryImages(e, settings, base, format);
+    imageNames.set(e.id, images.map((image) => image.name));
+    for (const image of images) {
       files.push({ name: image.name, data: image, date: new Date(e.createdAt) });
     }
     if (e.audio) files.push({ name: audioName, data: e.audio, date: new Date(e.createdAt) });
@@ -134,7 +144,7 @@ export async function buildExportZip(entries, settings, onProgress = () => {}, {
     }
     onProgress(i + 1, sorted.length);
   }
-  files.push({ name: 'entries.csv', data: buildCsv(sorted, names, includePhotos), date: new Date() });
+  files.push({ name: 'entries.csv', data: buildCsv(sorted, names, includePhotos, imageNames), date: new Date() });
   return makeZip(files);
 }
 

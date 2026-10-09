@@ -7,7 +7,7 @@ import { getTeams } from '../team.js';
 import { loadTeamFiles } from '../sync.js';
 import { photosOf } from '../image.js';
 import { goBack } from '../router.js';
-import { buildExportZip, canShareFile, downloadBlob, shareOrDownload, previewImage } from '../exporter.js';
+import { buildExportZip, canShareFile, downloadBlob, shareOrDownload, previewImage, pageCount } from '../exporter.js';
 import { listFormats, formatName } from '../templates.js';
 import { sampleEntry } from '../render.js';
 import { openViewer } from '../viewer.js';
@@ -315,7 +315,8 @@ export async function renderExport(el) {
       const name = `pitside_export_${toInputDate(new Date())}.zip`;
       zipFile = new File([zip], name, { type: 'application/zip' });
       const voiceCount = list.filter((e) => e.audio).length;
-      const imageCount = list.reduce((n, e) => n + Math.max(1, photosOf(e).length), 0);
+      let imageCount = 0;
+      for (const e of list) imageCount += await pageCount(e, settings, choice.format);
       const photoCount = choice.includePhotos ? list.reduce((n, e) => n + photosOf(e).length, 0) : 0;
       $('.result-text').textContent = `${name} · ${imageCount} slide ${imageCount === 1 ? 'image' : 'images'}`
         + `${photoCount ? ` · ${photoCount} ${photoCount === 1 ? 'photo' : 'photos'}` : ''}`

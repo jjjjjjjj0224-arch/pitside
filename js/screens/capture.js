@@ -35,7 +35,7 @@ export async function renderCapture(el, id) {
     ? {
       type: existing.type,
       stage: existing.stage || null,
-      photos: photosOf(existing).map((p) => ({ photo: p.photo, drawing: p.drawing || null })),
+      photos: photosOf(existing).map((p) => ({ photo: p.photo, drawing: p.drawing || null, note: p.note || '' })),
       caption: existing.caption || '',
       audio: existing.audio || null,
       audioMime: existing.audioMime || null,
@@ -45,7 +45,7 @@ export async function renderCapture(el, id) {
     : {
       type: settings.defaultType,
       stage: null,
-      photos: [],            // [{ photo: Blob, drawing: Blob | null }]
+      photos: [],            // [{ photo: Blob, drawing: Blob | null, note: '' }]
       caption: '',
       audio: null,
       audioMime: null,
@@ -94,6 +94,11 @@ export async function renderCapture(el, id) {
           <button type="button" class="btn btn-secondary" data-act="next">Next ›</button>
         </div>
         <p class="photo-count" aria-live="polite" hidden></p>
+        <div class="photo-note" hidden>
+          <label class="label-small" for="photo-note">Note for this photo <span class="muted">(optional)</span></label>
+          <input id="photo-note" class="input" type="text" maxlength="300" autocapitalize="sentences"
+                 placeholder="What does this photo show?">
+        </div>
         <div class="photo-strip" hidden>
           <div class="strip-list" role="group" aria-label="Photos in this entry"></div>
           <div class="strip-add">
@@ -170,6 +175,7 @@ export async function renderCapture(el, id) {
   const strip = $('.photo-strip');
   const stripList = $('.strip-list');
   const captionEl = $('#caption');
+  const noteEl = $('#photo-note');
   const matchField = $('[data-match]');
   const matchEl = $('#match');
   const stageToggle = $('.stage-toggle');
@@ -194,7 +200,7 @@ export async function renderCapture(el, id) {
     filledBox.hidden = !has;
     strip.hidden = !has;
     $('.photo-nav-row').hidden = !has;
-    if (!has) { countLabel.hidden = true; return; }
+    if (!has) { countLabel.hidden = true; $('.photo-note').hidden = true; return; }
 
     const p = list[current];
     photoImg.src = urls.make(p.photo);
@@ -203,6 +209,9 @@ export async function renderCapture(el, id) {
     if (p.drawing) drawingImg.src = urls.make(p.drawing);
     countLabel.hidden = list.length < 2;
     countLabel.textContent = `Photo ${current + 1} of ${list.length}`;
+    // This photo's own note (printed next to it on export, instead of repeating the caption).
+    $('.photo-note').hidden = false;
+    noteEl.value = p.note || '';
     // Prev / Next under the photo (only when there's more than one photo).
     const prevBtn = $('[data-act="prev"]');
     const nextBtn = $('[data-act="next"]');
@@ -248,9 +257,9 @@ export async function renderCapture(el, id) {
           busyNote.textContent = chosen.length > 1 ? `Loading photo ${i + 1} of ${chosen.length}…` : 'Loading photo…';
           const photo = await resizePhoto(chosen[i]);
           if (mode === 'replace' && draft.photos[current]) {
-            draft.photos[current] = { photo, drawing: null };   // an old drawing wouldn't match
+            draft.photos[current] = { photo, drawing: null, note: draft.photos[current].note || '' };   // an old drawing wouldn't match
           } else {
-            draft.photos.push({ photo, drawing: null });
+            draft.photos.push({ photo, drawing: null, note: '' });
             current = draft.photos.length - 1;
           }
           markDirty();
@@ -381,6 +390,12 @@ export async function renderCapture(el, id) {
   // ---- Caption and match number ----
 
   captionEl.addEventListener('input', () => { draft.caption = captionEl.value; markDirty(); });
+  noteEl.addEventListener('input', () => {
+    const p = draft.photos[current];
+    if (!p) return;
+    p.note = noteEl.value;
+    markDirty();
+  });
 
   // ---- Share with (one team, or only on this phone) ----
   el.querySelectorAll('input[name="share"]').forEach((radio) => radio.addEventListener('change', () => {
@@ -469,7 +484,7 @@ export async function renderCapture(el, id) {
         id: existing ? existing.id : uuid(),
         type: draft.type,
         stage: draft.stage || null,
-        photos: draft.photos.map((p) => ({ photo: p.photo, drawing: p.drawing || null })),
+        photos: draft.photos.map((p) => ({ photo: p.photo, drawing: p.drawing || null, note: (p.note || '').trim() })),
         caption: draft.caption.trim(),
         audio: draft.audio,
         audioMime: draft.audio ? draft.audioMime : null,

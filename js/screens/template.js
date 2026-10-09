@@ -9,7 +9,7 @@ import { getAllEntries } from '../db.js';
 import { getSettings, saveExportOptions } from '../settings.js';
 import { openPdf } from '../pdfpages.js';
 import { loadImage, canvasToBlob } from '../image.js';
-import { renderTemplateImage, sampleEntry } from '../render.js';
+import { renderTemplateImage, sampleEntry, photoBoxesOf } from '../render.js';
 import { audioFileName, shareOrDownload } from '../exporter.js';
 import {
   BOX_KINDS, kindLabel, TEXT_SIZES, getFormat, saveFormat, deleteFormat, newBox, sampleCoverColor,
@@ -211,6 +211,7 @@ export async function renderTemplateEditor(el, idParam) {
 
         <section class="card">
           <h2 class="label-small">Add a box</h2>
+          <p class="hint">Add more Photo boxes to put several photos on one page. They fill in reading order.</p>
           <div class="chips add-boxes">
             ${BOX_KINDS.map((k) => `<button type="button" class="chip" data-add="${k.kind}">+ ${esc(k.label)}</button>`).join('')}
           </div>
@@ -251,12 +252,25 @@ export async function renderTemplateEditor(el, idParam) {
   function drawBoxes() {
     const layer = el.querySelector('.box-layer');
     if (!layer) return;
+    // Photo boxes are numbered in the order photos fill them (top to bottom, left to right).
+    const photoNumber = new Map(photoBoxesOf(tpl).map((b, i) => [b.id, i + 1]));
+    const several = photoNumber.size > 1;
     layer.innerHTML = tpl.boxes.map((b) => `
       <div class="t-box${b.id === selectedId ? ' selected' : ''}${b.kind === 'photo' ? ' photo' : ''}" data-box="${b.id}"
            style="left:${b.x * 100}%;top:${b.y * 100}%;width:${b.w * 100}%;height:${b.h * 100}%;${b.cover ? `background:${b.coverColor};` : ''}">
-        <span class="t-box-label" style="color:${b.kind === 'photo' ? '#fff' : b.color}">${esc(kindLabel(b.kind))}</span>
+        <span class="t-box-label" style="color:${b.kind === 'photo' ? '#fff' : b.color}">${esc(kindLabel(b.kind))}${several && photoNumber.has(b.id) ? ` ${photoNumber.get(b.id)}` : ''}</span>
         <span class="t-handle" data-handle="${b.id}" aria-hidden="true"></span>
       </div>`).join('');
+  }
+
+  // After moving a box: renumber the photo boxes without rebuilding them.
+  function relabelPhotos() {
+    const boxes = photoBoxesOf(tpl);
+    if (boxes.length < 2) return;
+    boxes.forEach((b, i) => {
+      const label = el.querySelector(`[data-box="${b.id}"] .t-box-label`);
+      if (label) label.textContent = `${kindLabel('photo')} ${i + 1}`;
+    });
   }
 
   function drawPanel() {
@@ -373,7 +387,10 @@ export async function renderTemplateEditor(el, idParam) {
       const node = stage.querySelector(`[data-box="${b.id}"]`);
       Object.assign(node.style, { left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` });
     });
-    const endDrag = () => { if (drag && drag.moved) dirty = true; drag = null; };
+    const endDrag = () => {
+      if (drag && drag.moved) { dirty = true; relabelPhotos(); }   // (photo numbers may have changed)
+      drag = null;
+    };
     stage.addEventListener('pointerup', endDrag);
     stage.addEventListener('pointercancel', endDrag);
     // Tapping the page (not a box) unselects.
@@ -422,7 +439,7 @@ export async function renderTemplateEditor(el, idParam) {
       btn.disabled = true;
       try {
         const entry = (await getAllEntries())[0] || await sampleEntry([...useFor][0] || TYPES[0], getSettings().author);
-        const png = await renderTemplateImage(entry, tpl, audioFileName(entry), 0);
+        const png = await renderTemplateImage(entry, tpl, audioFileName(entry), 0, getSettings().export[entry.type]);
         const img = $('.template-preview');
         img.src = urls.make(png);
         img.hidden = false;
